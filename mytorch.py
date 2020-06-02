@@ -47,6 +47,10 @@ class ExpFn(Fn):
         self.res=Tensor(np.exp(Tensor.strip(x)))
         return self.res
     def backward(self,grad,x): return [grad*self.res]
+
+class LogFn(Fn):
+    def forward(self,x): return Tensor(np.log(Tensor.strip(x)))
+    def backward(self,grad,x): return [grad/x]
     
 class MatMulFn(Fn):
     def forward(self,x,y):
@@ -145,6 +149,7 @@ class Tensor:
     def sqrt(self): return PowFn()(self,.5)
     def sum(self,**kws): return SumFn()(self,**kws)
     def exp(self): return ExpFn()(self)
+    def log(self): return LogFn()(self)
     def sigmoid(self): return 1./(1.+(-self).exp())
     def reshape(self,shape): return Tensor(self.v.reshape(shape))
     
@@ -203,8 +208,10 @@ class Tensor:
 def zeros(shape,do_grad=False):
     return Tensor(np.zeros(shape),do_grad=do_grad)
 def ones(shape): return Tensor(np.ones(shape))
+def arange(*args,**kws): return Tensor(np.arange(*args,**kws))
 def randn(*args,do_grad=False):
     return Tensor(rs.randn(*args),do_grad=do_grad)
+def randperm(n): return Tensor(rs.permutation(n))
 def linspace(*args): return Tensor(np.linspace(*args))
 def log(t): return Tensor(np.log(Tensor.strip(t)))
 def tensor(*args,**kws): return Tensor(*args,**kws)
@@ -235,6 +242,11 @@ class Linear(Module):
 
 class Sigmoid:
     def __call__(self,x): return x.sigmoid()
+
+class Softmax:
+    def __call__(self,x):
+        e=x.exp()
+        return e/e.sum(axis=1,keepdims=True)
 
 class Seq(Module):
     def __init__(self,*modules):
