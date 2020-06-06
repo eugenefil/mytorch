@@ -2,6 +2,10 @@ import numpy as np
 
 rs=np.random.RandomState()
 
+float32=np.float32
+float64=np.float64
+int64=np.int64
+
 class Fn:
     def __call__(self,*args,**kws):
         res=self.forward(*args,**kws)
@@ -16,25 +20,25 @@ class Fn:
                 self.args=args
                 res.fn=self
         return res
-    
+
     def _backward(self,grad):
         return self.backward(grad,*self.args)
 
 class NegFn(Fn):
     def forward(self,x): return Tensor(-x.v)
     def backward(self,grad,x): return -grad
-    
+
 class AddFn(Fn):
     def forward(self,x,y): return Tensor(x.v+strip(y))
     def backward(self,grad,x,y): return [grad,grad]
-    
+
 class SubFn(Fn):
     def forward(self,x,y): return Tensor(x.v-strip(y))
     def backward(self,grad,x,y): return [
             grad,
             -grad if self.needs_grad[1] else None
     ]
-    
+
 class RSubFn(SubFn):
     def forward(self,x,y): return Tensor(strip(x)-y.v)
 
@@ -44,14 +48,14 @@ class MulFn(Fn):
             grad*y if self.needs_grad[0] else None,
             grad*x if self.needs_grad[1] else None
     ]
-    
+
 class DivFn(Fn):
     def forward(self,x,y): return Tensor(x.v/strip(y))
     def backward(self,grad,x,y): return [
             grad/y if self.needs_grad[0] else None,
             -grad*x/y**2. if self.needs_grad[1] else None
     ]
-    
+
 class RDivFn(DivFn):
     def forward(self,x,y): return Tensor(strip(x)/y.v)
 
@@ -73,7 +77,7 @@ class ExpFn(Fn):
 class LogFn(Fn):
     def forward(self,x): return Tensor(np.log(x.v))
     def backward(self,grad,x): return grad/x
-    
+
 class MatMulFn(Fn):
     def forward(self,x,y): return Tensor(x.v@y.v)
     def backward(self,grad,x,y): return [
@@ -84,10 +88,10 @@ class MatMulFn(Fn):
 class GetItemFn(Fn):
     def forward(self,x,key): return Tensor(x.v[key])
     def backward(self,grad,x,key):
-        out=zeros(x.shape)
+        out=zeros_like(x)
         out[key]=grad
         return [out,None]
-    
+
 class SumFn(Fn):
     def forward(self,x,axis=None,keepdims=False):
         self.axis=None
@@ -107,7 +111,7 @@ class SumFn(Fn):
 class CosFn(Fn):
     def forward(self,x): return Tensor(np.cos(x.v))
     def backward(self,grad,x): return -grad*x.sin()
-    
+
 class SinFn(Fn):
     def forward(self,x): return Tensor(np.sin(x.v))
     def backward(self,grad,x): return grad*x.cos()
@@ -128,8 +132,8 @@ class no_grad:
 class Tensor:
     do_grad=True
     
-    def __init__(self,v,do_grad=False,fn=None):
-        self.v=np.asarray(v)
+    def __init__(self,v,do_grad=False,dtype=None,fn=None):
+        self.v=np.asarray(v,dtype=dtype)
         self.do_grad=do_grad
         self._grad=None
         self.fn=fn
@@ -184,6 +188,13 @@ class Tensor:
         n=1
         for a in ax:
             n*=self.shape[a]
+        # It seems numpy converts n to float64 when dividing by it. In
+        # cases where sum is reduced to a scalar this may promote the
+        # (e.g. float32) result itself to float64. To keep original
+        # dtype convert n to it explicitly. Done only for float
+        # types. This is the same behavior as np.mean.
+        if np.issubdtype(self.dtype,np.floating):
+            n=self.dtype.type(n)
         return self.sum(axis=axis,**kws)/n
 
     def exp(self): return ExpFn()(self)
@@ -195,13 +206,20 @@ class Tensor:
     def zero_(self):
         if self.do_grad and Tensor.do_grad:
             raise TypeError('in-place operation is prohibited, since it may change the graph')
-        self.v=zeros(self.shape).v
+        # zero all elements, this works faster than creating new array
+        # w/ zeros_like()
+        self.v[...]=0
+        return self
+
+    def to_(self,dtype):
+        self.v=np.asarray(self.v,dtype=dtype)
+        if self._grad is not None: self._grad.to_(dtype)
         return self
 
     @no_grad()
     def backward(self,create_graph=False):
         if not self.do_grad: raise TypeError("this tensor doesn't require gradients")
-        lst=[(self,Tensor(1.))]
+        lst=[(self,Tensor(1,dtype=self.dtype))]
         while lst:
             t,tgrad=lst.pop()
             # if tensor was broadcasted, so grad has different shape,
@@ -244,6 +262,8 @@ class Tensor:
     @property
     def shape(self): return self.v.shape
     @property
+    def dtype(self): return self.v.dtype
+    @property
     def T(self): return Tensor(self.v.T)
     @property
     def ndim(self): return self.v.ndim
@@ -257,6 +277,7 @@ def iterstrip(t):
 
 def zeros(shape,do_grad=False):
     return Tensor(np.zeros(shape),do_grad=do_grad)
+def zeros_like(*args,**kws): return Tensor(np.zeros_like(*args,**kws))
 def ones(shape): return Tensor(np.ones(shape))
 def arange(*args,**kws): return Tensor(np.arange(*args,**kws))
 def randn(*args,do_grad=False):
@@ -277,6 +298,11 @@ class Module:
                 p.append(m.w)
                 if m.b is not None: p.append(m.b)
         return p
+
+    def to(self,dtype):
+        for p in self.params():
+            p.to_(dtype)
+        return self
 
 class Linear(Module):
     def __init__(self,n_in,n_out,bias=True):
