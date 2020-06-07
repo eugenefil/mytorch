@@ -1,3 +1,6 @@
+# TODO rewrite backward() of funcs to use pure numpy instead of Tensor
+#      ops to gain some performance maybe
+
 import numpy as np
 
 rs=np.random.RandomState()
@@ -77,6 +80,35 @@ class ExpFn(Fn):
 class LogFn(Fn):
     def forward(self,x): return Tensor(np.log(x.v))
     def backward(self,grad,x): return grad/x
+
+class SigmoidFn(Fn):
+    def forward(self,x):
+        # cast 1. to x.dtype to keep original type, otherwise numpy
+        # will promote 1. (and the end result) to float64 when x is a
+        # scalar
+        self.one=x.dtype.type(1)
+        self.res=self.one/(self.one+np.exp(-x.v))
+        return Tensor(self.res)
+    def backward(self,grad,x):
+        return grad*Tensor(self.res*(self.one-self.res))
+
+class LogSoftmaxFn(Fn):
+    def forward(self,x):
+        # Plain softmax is unstable due to possible exp()
+        # overflow/underflow. Due to softmax(x) == softmax(x+c)
+        # identity we can replace softmax(x) w/
+        # softmax(x-max(x)). z=x-max(x) leaves us negative values of z
+        # and one zero value which solves instabilities for
+        # softmax. For log-softmax the problem of softmax(z)=0 still
+        # remains, so we use expanded form log(softmax(z)) =
+        # z-log(sum(exp(z))), which solves that.
+        z=x.v-x.v.max(axis=1,keepdims=True)
+        ez=np.exp(z)
+        ezsum=ez.sum(axis=1,keepdims=True)
+        self.a=ez/ezsum # save for backward
+        return Tensor(z-np.log(ezsum))
+    def backward(self,grad,x):
+        return grad-Tensor(self.a*grad.v.sum(axis=1,keepdims=True))
 
 class MatMulFn(Fn):
     def forward(self,x,y): return Tensor(x.v@y.v)
@@ -199,7 +231,8 @@ class Tensor:
 
     def exp(self): return ExpFn()(self)
     def log(self): return LogFn()(self)
-    def sigmoid(self): return 1./(1.+(-self).exp())
+    def sigmoid(self): return SigmoidFn()(self)
+    def log_softmax(self): return LogSoftmaxFn()(self)
     def reshape(self,shape): return Tensor(self.v.reshape(shape))
     def argmax(self,**kws): return Tensor(self.v.argmax(**kws))
     
@@ -325,8 +358,7 @@ class Softmax:
         return e/e.sum(axis=1,keepdims=True)
 
 class LogSoftmax:
-    def __call__(self,x):
-        return x-x.exp().sum(axis=1,keepdims=True).log()
+    def __call__(self,x): return x.log_softmax()
 
 class Seq(Module):
     def __init__(self,*modules):
