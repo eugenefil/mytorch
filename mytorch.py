@@ -1,5 +1,4 @@
-# TODO rewrite backward() of funcs to use pure numpy instead of Tensor
-#      ops to gain some performance maybe
+# TODO maybe implementt radd/rmul/rmatmul to avoid excess strip() calls
 
 import numpy as np
 
@@ -29,7 +28,7 @@ class Fn:
 
 class NegFn(Fn):
     def forward(self,x): return Tensor(-x.v)
-    def backward(self,grad,x): return -grad
+    def backward(self,grad,x): return Tensor(-grad.v)
 
 class AddFn(Fn):
     def forward(self,x,y): return Tensor(x.v+strip(y))
@@ -39,58 +38,69 @@ class SubFn(Fn):
     def forward(self,x,y): return Tensor(x.v-strip(y))
     def backward(self,grad,x,y): return [
             grad,
-            -grad if self.needs_grad[1] else None
+            Tensor(-grad.v) if self.needs_grad[1] else None
     ]
 
 class RSubFn(SubFn):
-    def forward(self,x,y): return Tensor(strip(x)-y.v)
+    def forward(self,x,y): return Tensor(x-y.v)
 
 class MulFn(Fn):
     def forward(self,x,y): return Tensor(x.v*strip(y))
     def backward(self,grad,x,y): return [
-            grad*y if self.needs_grad[0] else None,
-            grad*x if self.needs_grad[1] else None
+            Tensor(grad.v*strip(y)) if self.needs_grad[0] else None,
+            Tensor(grad.v*x.v) if self.needs_grad[1] else None
     ]
 
 class DivFn(Fn):
     def forward(self,x,y): return Tensor(x.v/strip(y))
     def backward(self,grad,x,y): return [
-            grad/y if self.needs_grad[0] else None,
-            -grad*x/y**2. if self.needs_grad[1] else None
+            Tensor(grad.v/strip(y)) if self.needs_grad[0] else None,
+            Tensor(-grad.v*x.v/strip(y)**2.) if self.needs_grad[1] else None
     ]
 
-class RDivFn(DivFn):
-    def forward(self,x,y): return Tensor(strip(x)/y.v)
+class RDivFn(Fn):
+    def forward(self,x,y): return Tensor(x/y.v)
+    def backward(self,grad,x,y): return [
+            None, # x is not a tensor
+            Tensor(-grad.v*x/y.v**2.) if self.needs_grad[1] else None
+    ]
 
 class PowFn(Fn):
     def forward(self,x,y): return Tensor(x.v**strip(y))
-    # don't show warning for neg/zero log argument, just return nan
-    @np.errstate(invalid='ignore',divide='ignore')
     def backward(self,grad,x,y): return [
-            grad*y*x**(y-1.) if self.needs_grad[0] else None,
-            grad*x**y*log(x) if self.needs_grad[1] else None
+            Tensor(grad.v*strip(y)*x.v**(strip(y)-1.))
+            if self.needs_grad[0] else None,
+            Tensor(grad.v*x.v**strip(y)*np.log(x.v))
+            if self.needs_grad[1] else None
+    ]
+
+class RPowFn(Fn):
+    def forward(self,x,y): return Tensor(x**y.v)
+    def backward(self,grad,x,y): return [
+            None, # x is not a tensor
+            Tensor(grad.v*x**y.v*np.log(x)) if self.needs_grad[1] else None
     ]
 
 class ExpFn(Fn):
     def forward(self,x):
-        self.res=Tensor(np.exp(x.v))
-        return self.res
-    def backward(self,grad,x): return grad*self.res
+        self.res=np.exp(x.v)
+        return Tensor(self.res)
+    def backward(self,grad,x): return Tensor(grad.v*self.res)
 
 class LogFn(Fn):
     def forward(self,x): return Tensor(np.log(x.v))
-    def backward(self,grad,x): return grad/x
+    def backward(self,grad,x): return Tensor(grad.v/x.v)
 
 class SigmoidFn(Fn):
     def forward(self,x):
         # cast 1. to x.dtype to keep original type, otherwise numpy
         # will promote 1. (and the end result) to float64 when x is a
         # scalar
-        self.one=x.dtype.type(1)
+        self.one=x.v.dtype.type(1)
         self.res=self.one/(self.one+np.exp(-x.v))
         return Tensor(self.res)
     def backward(self,grad,x):
-        return grad*Tensor(self.res*(self.one-self.res))
+        return Tensor(grad.v*self.res*(self.one-self.res))
 
 class LogSoftmaxFn(Fn):
     def forward(self,x):
@@ -108,21 +118,27 @@ class LogSoftmaxFn(Fn):
         self.a=ez/ezsum # save for backward
         return Tensor(z-np.log(ezsum))
     def backward(self,grad,x):
-        return grad-Tensor(self.a*grad.v.sum(axis=1,keepdims=True))
+        return Tensor(grad.v-self.a*grad.v.sum(axis=1,keepdims=True))
 
 class MatMulFn(Fn):
-    def forward(self,x,y): return Tensor(x.v@y.v)
+    def forward(self,x,y): return Tensor(np.matmul(x.v,y.v))
     def backward(self,grad,x,y): return [
-            grad@y.T if self.needs_grad[0] else None,
-            x.T@grad if self.needs_grad[1] else None
+            Tensor(np.matmul(grad.v,y.v.T)) if self.needs_grad[0] else None,
+            Tensor(np.matmul(x.v.T,grad.v)) if self.needs_grad[1] else None
     ]
 
 class GetItemFn(Fn):
+    # W/ advanced indexing the key could be a tuple of tensors, in
+    # which case we'd like to make a stripped tuple of numpy arrays
+    # from it for passing to numpy. But we don't do this. To get
+    # indices from each tensor numpy creates an iter, which per our
+    # implementation (see Tensor.__iter__) is a native numpy iter. So
+    # we're fine w/out making a stripped tuple.
     def forward(self,x,key): return Tensor(x.v[key])
     def backward(self,grad,x,key):
-        out=zeros_like(x)
-        out[key]=grad
-        return [out,None]
+        out=np.zeros_like(x.v)
+        out[key]=grad.v
+        return [Tensor(out),None]
 
 class SumFn(Fn):
     def forward(self,x,axis=None,keepdims=False):
@@ -131,22 +147,23 @@ class SumFn(Fn):
         # to original shape later
         if not keepdims:
             self.axis=tuple(range(x.ndim)) if axis is None else axis
-        return Tensor(np.sum(x.v,axis=axis,keepdims=keepdims))
+        # note: calling x.v.sum() is faster than np.sum(x.v)
+        return Tensor(x.v.sum(axis=axis,keepdims=keepdims))
 
     def backward(self,grad,x):
         grad=grad.v
         # if axes were reduced, restore them to broadcast grad correctly
         if self.axis is not None:
             grad=np.expand_dims(grad,self.axis)
-        return Tensor(np.broadcast_to(grad,x.shape))
+        return Tensor(np.broadcast_to(grad,x.v.shape))
 
 class CosFn(Fn):
     def forward(self,x): return Tensor(np.cos(x.v))
-    def backward(self,grad,x): return -grad*x.sin()
+    def backward(self,grad,x): return Tensor(-grad.v*np.sin(x.v))
 
 class SinFn(Fn):
     def forward(self,x): return Tensor(np.sin(x.v))
-    def backward(self,grad,x): return grad*x.cos()
+    def backward(self,grad,x): return Tensor(grad.v*np.cos(x.v))
 
 
 class no_grad:
@@ -182,11 +199,13 @@ class Tensor:
     def __isub__(self,other):
         if self.do_grad and Tensor.do_grad:
             raise TypeError('in-place operation is prohibited, since it may change the graph')
-        self.v=SubFn()(self,other).v
+        # subtract directly, no need for SubFn here, since this op is
+        # only allowed when gradient calculation is off
+        self.v-=strip(other)
         return self
 
     def __pow__(self,other): return PowFn()(self,other)
-    def __rpow__(self,other): return PowFn()(other,self)
+    def __rpow__(self,other): return RPowFn()(other,self)
     def __matmul__(self,other): return MatMulFn()(self,other)
     def __rmatmul__(self,other): return MatMulFn()(other,self)
 
@@ -215,18 +234,18 @@ class Tensor:
 
     def mean(self,axis=None,**kws):
         ax=axis
-        if ax is None: ax=tuple(range(self.ndim))
+        if ax is None: ax=tuple(range(self.v.ndim))
         if not isinstance(ax,tuple): ax=(ax,)
         n=1
         for a in ax:
-            n*=self.shape[a]
+            n*=self.v.shape[a]
         # It seems numpy converts n to float64 when dividing by it. In
         # cases where sum is reduced to a scalar this may promote the
         # (e.g. float32) result itself to float64. To keep original
         # dtype convert n to it explicitly. Done only for float
         # types. This is the same behavior as np.mean.
-        if np.issubdtype(self.dtype,np.floating):
-            n=self.dtype.type(n)
+        if np.issubdtype(self.v.dtype,np.floating):
+            n=self.v.dtype.type(n)
         return self.sum(axis=axis,**kws)/n
 
     def exp(self): return ExpFn()(self)
@@ -317,7 +336,6 @@ def randn(*args,do_grad=False):
     return Tensor(rs.randn(*args),do_grad=do_grad)
 def randperm(n): return Tensor(rs.permutation(n))
 def linspace(*args): return Tensor(np.linspace(*args))
-def log(t): return Tensor(np.log(t.v))
 def tensor(v,**kws): return Tensor(iterstrip(v),**kws)
 
 def manual_seed(seed): rs.seed(seed)
@@ -346,7 +364,9 @@ class Linear(Module):
 
     def __call__(self,x):
         z=x@self.w
-        if self.b is not None: z+=self.b
+        if self.b is not None:
+            # add explicitly, since += is an in-place op
+            z=z+self.b
         return z
 
 class Sigmoid:
