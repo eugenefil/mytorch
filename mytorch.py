@@ -10,7 +10,7 @@ int64=np.int64
 
 class Fn:
     def __call__(self,*args,**kws):
-        res=self.forward(*args,**kws)
+        res=Tensor(self.forward(*args,**kws))
         if Tensor.do_grad:
             if len(args)==1:
                 res.do_grad=args[0].do_grad
@@ -27,69 +27,67 @@ class Fn:
         return self.backward(grad,*self.args)
 
 class NegFn(Fn):
-    def forward(self,x): return Tensor(-x.v)
-    def backward(self,grad,x): return Tensor(-grad.v)
+    def forward(self,x): return -x.v
+    def backward(self,grad,x): return -grad
 
 class AddFn(Fn):
-    def forward(self,x,y): return Tensor(x.v+strip(y))
+    def forward(self,x,y): return x.v+strip(y)
     def backward(self,grad,x,y): return [grad,grad]
 
 class SubFn(Fn):
-    def forward(self,x,y): return Tensor(x.v-strip(y))
+    def forward(self,x,y): return x.v-strip(y)
     def backward(self,grad,x,y): return [
             grad,
-            Tensor(-grad.v) if self.needs_grad[1] else None
+            -grad if self.needs_grad[1] else None
     ]
 
 class RSubFn(SubFn):
-    def forward(self,x,y): return Tensor(x-y.v)
+    def forward(self,x,y): return x-y.v
 
 class MulFn(Fn):
-    def forward(self,x,y): return Tensor(x.v*strip(y))
+    def forward(self,x,y): return x.v*strip(y)
     def backward(self,grad,x,y): return [
-            Tensor(grad.v*strip(y)) if self.needs_grad[0] else None,
-            Tensor(grad.v*x.v) if self.needs_grad[1] else None
+            grad*strip(y) if self.needs_grad[0] else None,
+            grad*x.v if self.needs_grad[1] else None
     ]
 
 class DivFn(Fn):
-    def forward(self,x,y): return Tensor(x.v/strip(y))
+    def forward(self,x,y): return x.v/strip(y)
     def backward(self,grad,x,y): return [
-            Tensor(grad.v/strip(y)) if self.needs_grad[0] else None,
-            Tensor(-grad.v*x.v/strip(y)**2.) if self.needs_grad[1] else None
+            grad/strip(y) if self.needs_grad[0] else None,
+            -grad*x.v/strip(y)**2. if self.needs_grad[1] else None
     ]
 
 class RDivFn(Fn):
-    def forward(self,x,y): return Tensor(x/y.v)
+    def forward(self,x,y): return x/y.v
     def backward(self,grad,x,y): return [
             None, # x is not a tensor
-            Tensor(-grad.v*x/y.v**2.) if self.needs_grad[1] else None
+            -grad*x/y.v**2. if self.needs_grad[1] else None
     ]
 
 class PowFn(Fn):
-    def forward(self,x,y): return Tensor(x.v**strip(y))
+    def forward(self,x,y): return x.v**strip(y)
     def backward(self,grad,x,y): return [
-            Tensor(grad.v*strip(y)*x.v**(strip(y)-1.))
-            if self.needs_grad[0] else None,
-            Tensor(grad.v*x.v**strip(y)*np.log(x.v))
-            if self.needs_grad[1] else None
+            grad*strip(y)*x.v**(strip(y)-1.) if self.needs_grad[0] else None,
+            grad*x.v**strip(y)*np.log(x.v) if self.needs_grad[1] else None
     ]
 
 class RPowFn(Fn):
-    def forward(self,x,y): return Tensor(x**y.v)
+    def forward(self,x,y): return x**y.v
     def backward(self,grad,x,y): return [
             None, # x is not a tensor
-            Tensor(grad.v*x**y.v*np.log(x)) if self.needs_grad[1] else None
+            grad*x**y.v*np.log(x) if self.needs_grad[1] else None
     ]
 
 class ExpFn(Fn):
     def forward(self,x):
         self.res=np.exp(x.v)
-        return Tensor(self.res)
-    def backward(self,grad,x): return Tensor(grad.v*self.res)
+        return self.res
+    def backward(self,grad,x): return grad*self.res
 
 class LogFn(Fn):
-    def forward(self,x): return Tensor(np.log(x.v))
-    def backward(self,grad,x): return Tensor(grad.v/x.v)
+    def forward(self,x): return np.log(x.v)
+    def backward(self,grad,x): return grad/x.v
 
 class SigmoidFn(Fn):
     def forward(self,x):
@@ -98,9 +96,9 @@ class SigmoidFn(Fn):
         # scalar
         self.one=x.v.dtype.type(1)
         self.res=self.one/(self.one+np.exp(-x.v))
-        return Tensor(self.res)
+        return self.res
     def backward(self,grad,x):
-        return Tensor(grad.v*self.res*(self.one-self.res))
+        return grad*self.res*(self.one-self.res)
 
 class LogSoftmaxFn(Fn):
     def forward(self,x):
@@ -116,15 +114,15 @@ class LogSoftmaxFn(Fn):
         ez=np.exp(z)
         ezsum=ez.sum(axis=1,keepdims=True)
         self.a=ez/ezsum # save for backward
-        return Tensor(z-np.log(ezsum))
+        return z-np.log(ezsum)
     def backward(self,grad,x):
-        return Tensor(grad.v-self.a*grad.v.sum(axis=1,keepdims=True))
+        return grad-self.a*grad.sum(axis=1,keepdims=True)
 
 class MatMulFn(Fn):
-    def forward(self,x,y): return Tensor(np.matmul(x.v,y.v))
+    def forward(self,x,y): return np.matmul(x.v,y.v)
     def backward(self,grad,x,y): return [
-            Tensor(np.matmul(grad.v,y.v.T)) if self.needs_grad[0] else None,
-            Tensor(np.matmul(x.v.T,grad.v)) if self.needs_grad[1] else None
+            np.matmul(grad,y.v.T) if self.needs_grad[0] else None,
+            np.matmul(x.v.T,grad) if self.needs_grad[1] else None
     ]
 
 class GetItemFn(Fn):
@@ -134,11 +132,11 @@ class GetItemFn(Fn):
     # indices from each tensor numpy creates an iter, which per our
     # implementation (see Tensor.__iter__) is a native numpy iter. So
     # we're fine w/out making a stripped tuple.
-    def forward(self,x,key): return Tensor(x.v[key])
+    def forward(self,x,key): return x.v[key]
     def backward(self,grad,x,key):
         out=np.zeros_like(x.v)
-        out[key]=grad.v
-        return [Tensor(out),None]
+        out[key]=grad
+        return [out,None]
 
 class SumFn(Fn):
     def forward(self,x,axis=None,keepdims=False):
@@ -148,22 +146,21 @@ class SumFn(Fn):
         if not keepdims:
             self.axis=tuple(range(x.ndim)) if axis is None else axis
         # note: calling x.v.sum() is faster than np.sum(x.v)
-        return Tensor(x.v.sum(axis=axis,keepdims=keepdims))
+        return x.v.sum(axis=axis,keepdims=keepdims)
 
     def backward(self,grad,x):
-        grad=grad.v
         # if axes were reduced, restore them to broadcast grad correctly
         if self.axis is not None:
             grad=np.expand_dims(grad,self.axis)
-        return Tensor(np.broadcast_to(grad,x.v.shape))
+        return np.broadcast_to(grad,x.v.shape)
 
 class CosFn(Fn):
-    def forward(self,x): return Tensor(np.cos(x.v))
-    def backward(self,grad,x): return Tensor(-grad.v*np.sin(x.v))
+    def forward(self,x): return np.cos(x.v)
+    def backward(self,grad,x): return -grad*np.sin(x.v)
 
 class SinFn(Fn):
-    def forward(self,x): return Tensor(np.sin(x.v))
-    def backward(self,grad,x): return Tensor(grad.v*np.cos(x.v))
+    def forward(self,x): return np.sin(x.v)
+    def backward(self,grad,x): return grad*np.cos(x.v)
 
 # Here we bundle x@w+b into a single op. This saves a graph node and
 # some calculations. Backward formulas are taken from MatMulFn and
@@ -175,11 +172,11 @@ class LinearFn(Fn):
     def forward(self,x,w,b):
         z=np.matmul(x.v,w.v)
         if b is not None: z+=b.v
-        return Tensor(z)
+        return z
     def backward(self,grad,x,w,b): return [
-            Tensor(np.matmul(grad.v,w.v.T)) if self.needs_grad[0] else None,
-            Tensor(np.matmul(x.v.T,grad.v)) if self.needs_grad[1] else None,
-            Tensor(grad.v.sum(axis=0,keepdims=True)) if self.needs_grad[2] else None
+            np.matmul(grad,w.v.T) if self.needs_grad[0] else None,
+            np.matmul(x.v.T,grad) if self.needs_grad[1] else None,
+            grad.sum(axis=0,keepdims=True) if self.needs_grad[2] else None
     ]
 
 
@@ -288,15 +285,19 @@ class Tensor:
     @no_grad()
     def backward(self,create_graph=False):
         if not self.do_grad: raise TypeError("this tensor doesn't require gradients")
-        lst=[(self,Tensor(1,dtype=self.dtype))]
+        # since grad calculation is internal stuff, during graph
+        # traversal running gradient is stored as numpy array instead
+        # of Tensor object to avoid extra funcalls, but at leaves
+        # numpy is converted to Tensor
+        lst=[(self,self.v.dtype.type(1))] # (tensor,its gradient)
         while lst:
             t,tgrad=lst.pop()
             # if tensor was broadcasted, so grad has different shape,
             # sum-reduce grad to original tensor shape
-            if tgrad.shape!=t.shape:
-                ddim=tgrad.ndim-t.ndim
+            if tgrad.shape!=t.v.shape:
+                ddim=tgrad.ndim-t.v.ndim
                 assert ddim>=0, "broadcasting can't decrease num of dims"
-                bcast=(1,)*ddim+t.shape if ddim>0 else t.shape
+                bcast=(1,)*ddim+t.v.shape if ddim>0 else t.v.shape
                 axes=tuple([
                     i for i,(ng,nt) in enumerate(zip(tgrad.shape,bcast))
                     if ng>nt
@@ -304,13 +305,13 @@ class Tensor:
                 # sum-reduce axes that were broadcasted
                 if axes: tgrad=tgrad.sum(axis=axes,keepdims=True)
                 # if broadcasting added axes, reshape to original
-                if ddim>0: tgrad=tgrad.reshape(t.shape)
+                if ddim>0: tgrad=tgrad.reshape(t.v.shape)
 
             if not t.fn or create_graph: # if leaf or saving grad to every node
-                if t.grad is None:
-                    t.grad=tgrad
+                if t._grad is None:
+                    t._grad=Tensor(tgrad)
                 else:
-                    t.grad+=tgrad
+                    t._grad.v+=tgrad
 
             if t.fn:
                 if len(t.fn.args)==1:
