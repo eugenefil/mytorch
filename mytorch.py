@@ -7,6 +7,18 @@ float64=np.float64
 int64=np.int64
 
 
+class no_grad:
+    def __enter__(self):
+        Tensor.do_grad=False
+    def __exit__(self,*args):
+        Tensor.do_grad=True
+    def __call__(self,func):
+        def wrapper_no_grad(*args,**kws):
+            with self:
+                return func(*args,**kws)
+        return wrapper_no_grad
+
+
 class Fn:
     def __call__(self,*args,**kws):
         # by default, args that are treated as tensors and thus may
@@ -24,6 +36,50 @@ class Fn:
                 res.do_grad=any(self.needs_grad)
             if res.do_grad: res.fn=self
         return res
+
+    def get_args_grads(self,grad_in):
+        grad=self.backward(grad_in)
+        if len(self.args)==1:
+            return [(self.args[0],grad)]
+        else:
+            z=zip(self.args,self.needs_grad,grad)
+            return [(a,g) for a,needs,g in z if needs]
+
+
+@no_grad()
+def backward(t,create_graph=False):
+    # since grad calculation is internal stuff, during graph
+    # traversal running gradient is stored as numpy array instead
+    # of Tensor object to avoid extra funcalls, but at leaves
+    # numpy is converted to Tensor
+    lst=[(t,t.v.dtype.type(1))] # (tensor,running gradient)
+    while lst:
+        t,tgrad=lst.pop()
+        # if tensor was broadcasted, so grad has different shape,
+        # sum-reduce grad to original tensor shape
+        v=t.v
+        if tgrad.shape!=v.shape:
+            ddim=tgrad.ndim-v.ndim
+            assert ddim>=0, "broadcasting can't decrease num of dims"
+            bcast=(1,)*ddim+v.shape if ddim>0 else v.shape
+            axes=tuple([
+                i for i,(ng,nt) in enumerate(zip(tgrad.shape,bcast))
+                if ng>nt
+            ])
+            # sum-reduce axes that were broadcasted
+            if axes: tgrad=tgrad.sum(axis=axes,keepdims=True)
+            # if broadcasting added axes, reshape to original
+            if ddim>0: tgrad=tgrad.reshape(v.shape)
+
+        fn=t.fn
+        if not fn or create_graph: # if leaf or saving grad to every node
+            if t._grad is None:
+                t._grad=Tensor(tgrad)
+            else:
+                t._grad.v+=tgrad
+
+        if fn: lst.extend(fn.get_args_grads(tgrad))
+
 
 class NegFn(Fn):
     def forward(self,x): return -x.v
@@ -235,18 +291,6 @@ class LinearFn(Fn):
         )
 
 
-class no_grad:
-    def __enter__(self):
-        Tensor.do_grad=False
-    def __exit__(self,*args):
-        Tensor.do_grad=True
-    def __call__(self,func):
-        def wrapper_no_grad(*args,**kws):
-            with self:
-                return func(*args,**kws)
-        return wrapper_no_grad
-
-
 class Tensor:
     do_grad=True
     
@@ -337,47 +381,9 @@ class Tensor:
         if self._grad is not None: self._grad.to_(dtype)
         return self
 
-    @no_grad()
-    def backward(self,create_graph=False):
+    def backward(self,**kws):
         if not self.do_grad: raise TypeError("this tensor doesn't require gradients")
-        # since grad calculation is internal stuff, during graph
-        # traversal running gradient is stored as numpy array instead
-        # of Tensor object to avoid extra funcalls, but at leaves
-        # numpy is converted to Tensor
-        lst=[(self,self.v.dtype.type(1))] # (tensor,its gradient)
-        while lst:
-            t,tgrad=lst.pop()
-            # if tensor was broadcasted, so grad has different shape,
-            # sum-reduce grad to original tensor shape
-            if tgrad.shape!=t.v.shape:
-                ddim=tgrad.ndim-t.v.ndim
-                assert ddim>=0, "broadcasting can't decrease num of dims"
-                bcast=(1,)*ddim+t.v.shape if ddim>0 else t.v.shape
-                axes=tuple([
-                    i for i,(ng,nt) in enumerate(zip(tgrad.shape,bcast))
-                    if ng>nt
-                ])
-                # sum-reduce axes that were broadcasted
-                if axes: tgrad=tgrad.sum(axis=axes,keepdims=True)
-                # if broadcasting added axes, reshape to original
-                if ddim>0: tgrad=tgrad.reshape(t.v.shape)
-
-            if not t.fn or create_graph: # if leaf or saving grad to every node
-                if t._grad is None:
-                    t._grad=Tensor(tgrad)
-                else:
-                    t._grad.v+=tgrad
-
-            if t.fn:
-                if len(t.fn.args)==1:
-                    lst.append((t.fn.args[0],t.fn.backward(tgrad)))
-                else:
-                    lst.extend([
-                        (arg,grad)
-                        for arg,needs_grad,grad in
-                        zip(t.fn.args,t.fn.needs_grad,t.fn.backward(tgrad))
-                        if needs_grad
-                    ])
+        backward(self,**kws)
 
     @property
     def grad(self): return self._grad
