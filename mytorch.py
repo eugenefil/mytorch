@@ -1,5 +1,3 @@
-# TODO maybe implementt radd/rmul/rmatmul to avoid excess strip() calls
-
 import numpy as np
 
 rs=np.random.RandomState()
@@ -8,97 +6,131 @@ float32=np.float32
 float64=np.float64
 int64=np.int64
 
+
 class Fn:
     def __call__(self,*args,**kws):
+        # by default, args that are treated as tensors and thus may
+        # need gradient, are positional args, but each func may change
+        # that by setting self.args in its forward (e.g. may add a
+        # tensor arg from its keyword args)
+        self.args=args
         res=Tensor(self.forward(*args,**kws))
         if Tensor.do_grad:
-            if len(args)==1:
-                res.do_grad=args[0].do_grad
+            if len(self.args)==1:
+                res.do_grad=self.args[0].do_grad
             else:
                 self.needs_grad=[isinstance(a,Tensor) and a.do_grad
-                                 for a in args]
+                                 for a in self.args]
                 res.do_grad=any(self.needs_grad)
-            if res.do_grad:
-                self.args=args
-                res.fn=self
+            if res.do_grad: res.fn=self
         return res
-
-    def _backward(self,grad):
-        return self.backward(grad,*self.args)
 
 class NegFn(Fn):
     def forward(self,x): return -x.v
-    def backward(self,grad,x): return -grad
+    def backward(self,grad): return -grad
 
 class AddFn(Fn):
     def forward(self,x,y): return x.v+strip(y)
-    def backward(self,grad,x,y): return [grad,grad]
+    def backward(self,grad): return grad,grad
 
 class SubFn(Fn):
     def forward(self,x,y): return x.v-strip(y)
-    def backward(self,grad,x,y): return [
+    def backward(self,grad): return (
             grad,
             -grad if self.needs_grad[1] else None
-    ]
+    )
 
 class RSubFn(SubFn):
     def forward(self,x,y): return x-y.v
 
 class MulFn(Fn):
-    def forward(self,x,y): return x.v*strip(y)
-    def backward(self,grad,x,y): return [
-            grad*strip(y) if self.needs_grad[0] else None,
-            grad*x.v if self.needs_grad[1] else None
-    ]
+    def forward(self,x,y):
+        x,y=x.v,strip(y)
+        self.saved=(x,y)
+        return x*y
+
+    def backward(self,grad):
+        x,y=self.saved
+        return (
+            grad*y if self.needs_grad[0] else None,
+            grad*x if self.needs_grad[1] else None
+        )
 
 class DivFn(Fn):
-    def forward(self,x,y): return x.v/strip(y)
-    def backward(self,grad,x,y): return [
-            grad/strip(y) if self.needs_grad[0] else None,
-            -grad*x.v/strip(y)**2. if self.needs_grad[1] else None
-    ]
+    def forward(self,x,y):
+        x,y=x.v,strip(y)
+        self.saved=(x,y)
+        return x/y
+
+    def backward(self,grad):
+        x,y=self.saved
+        return (
+            grad/y if self.needs_grad[0] else None,
+            -grad*x/y**2. if self.needs_grad[1] else None
+        )
 
 class RDivFn(Fn):
-    def forward(self,x,y): return x/y.v
-    def backward(self,grad,x,y): return [
-            None, # x is not a tensor
-            -grad*x/y.v**2. if self.needs_grad[1] else None
-    ]
+    def forward(self,x,y):
+        self.args=(y,) # only y may be a tensor
+        y=y.v
+        res=x/y
+        self.saved=(res,y)
+        return res
+
+    def backward(self,grad):
+        x_over_y,y=self.saved
+        return -grad*x_over_y/y
 
 class PowFn(Fn):
-    def forward(self,x,y): return x.v**strip(y)
-    def backward(self,grad,x,y): return [
-            grad*strip(y)*x.v**(strip(y)-1.) if self.needs_grad[0] else None,
-            grad*x.v**strip(y)*np.log(x.v) if self.needs_grad[1] else None
-    ]
+    def forward(self,x,y):
+        x,y=x.v,strip(y)
+        self.saved=(x,y)
+        return x**y
+
+    def backward(self,grad):
+        x,y=self.saved
+        return (
+            grad*y*x**(y-1.) if self.needs_grad[0] else None,
+            grad*x**y*np.log(x) if self.needs_grad[1] else None
+        )
 
 class RPowFn(Fn):
-    def forward(self,x,y): return x**y.v
-    def backward(self,grad,x,y): return [
-            None, # x is not a tensor
-            grad*x**y.v*np.log(x) if self.needs_grad[1] else None
-    ]
+    def forward(self,x,y):
+        self.args=(y,) # only y may be a tensor
+        res=x**y.v
+        self.saved=(x,res)
+        return res
+
+    def backward(self,grad):
+        x,x_pow_y=self.saved
+        return grad*x_pow_y*np.log(x)
 
 class ExpFn(Fn):
     def forward(self,x):
-        self.res=np.exp(x.v)
-        return self.res
-    def backward(self,grad,x): return grad*self.res
+        self.saved=np.exp(x.v)
+        return self.saved
+    def backward(self,grad): return grad*self.saved
 
 class LogFn(Fn):
-    def forward(self,x): return np.log(x.v)
-    def backward(self,grad,x): return grad/x.v
+    def forward(self,x):
+        self.saved=x.v
+        return np.log(self.saved)
+    def backward(self,grad): return grad/self.saved
 
 class SigmoidFn(Fn):
     def forward(self,x):
+        x=x.v
         # cast 1. to x.dtype to keep original type, otherwise numpy
         # will promote 1. (and the end result) to float64 when x is a
         # scalar
-        self.one=x.v.dtype.type(1)
-        self.res=self.one/(self.one+np.exp(-x.v))
-        return self.res
-    def backward(self,grad,x):
-        return grad*self.res*(self.one-self.res)
+        one=x.dtype.type(1)
+        res=one/(one+np.exp(-x))
+        self.saved=(one,res)
+        return res
+
+    def backward(self,grad):
+        one,res=self.saved
+        return grad*res*(one-res)
 
 class LogSoftmaxFn(Fn):
     def forward(self,x):
@@ -110,20 +142,29 @@ class LogSoftmaxFn(Fn):
         # softmax. For log-softmax the problem of softmax(z)=0 still
         # remains, so we use expanded form log(softmax(z)) =
         # z-log(sum(exp(z))), which solves that.
-        z=x.v-x.v.max(axis=1,keepdims=True)
+        x=x.v
+        z=x-x.max(axis=1,keepdims=True)
         ez=np.exp(z)
         ezsum=ez.sum(axis=1,keepdims=True)
-        self.a=ez/ezsum # save for backward
+        self.saved=(ez,ezsum)
         return z-np.log(ezsum)
-    def backward(self,grad,x):
-        return grad-self.a*grad.sum(axis=1,keepdims=True)
+
+    def backward(self,grad):
+        ez,ezsum=self.saved
+        return grad-ez/ezsum*grad.sum(axis=1,keepdims=True)
 
 class MatMulFn(Fn):
-    def forward(self,x,y): return np.matmul(x.v,y.v)
-    def backward(self,grad,x,y): return [
-            np.matmul(grad,y.v.T) if self.needs_grad[0] else None,
-            np.matmul(x.v.T,grad) if self.needs_grad[1] else None
-    ]
+    def forward(self,x,y):
+        x,y=x.v,y.v
+        self.saved=(x,y)
+        return np.matmul(x,y)
+
+    def backward(self,grad):
+        x,y=self.saved
+        return (
+            np.matmul(grad,y.T) if self.needs_grad[0] else None,
+            np.matmul(x.T,grad) if self.needs_grad[1] else None
+        )
 
 class GetItemFn(Fn):
     # W/ advanced indexing the key could be a tuple of tensors, in
@@ -132,35 +173,44 @@ class GetItemFn(Fn):
     # indices from each tensor numpy creates an iter, which per our
     # implementation (see Tensor.__iter__) is a native numpy iter. So
     # we're fine w/out making a stripped tuple.
-    def forward(self,x,key): return x.v[key]
-    def backward(self,grad,x,key):
-        out=np.zeros_like(x.v)
+    def forward(self,x,key):
+        self.args=(x,)
+        x=x.v
+        self.saved=(x,key)
+        return x[key]
+
+    def backward(self,grad):
+        x,key=self.saved
+        out=np.zeros_like(x)
         out[key]=grad
-        return [out,None]
+        return out
 
 class SumFn(Fn):
     def forward(self,x,axis=None,keepdims=False):
-        self.axis=None
-        # if axes are reduced, store info to correctly broadcast grads
-        # to original shape later
-        if not keepdims:
-            self.axis=tuple(range(x.ndim)) if axis is None else axis
-        # note: calling x.v.sum() is faster than np.sum(x.v)
-        return x.v.sum(axis=axis,keepdims=keepdims)
+        x=x.v
+        self.saved=(x,axis,keepdims)
+        # note: x.sum() is faster than np.sum(x)
+        return x.sum(axis=axis,keepdims=keepdims)
 
-    def backward(self,grad,x):
-        # if axes were reduced, restore them to broadcast grad correctly
-        if self.axis is not None:
-            grad=np.expand_dims(grad,self.axis)
-        return np.broadcast_to(grad,x.v.shape)
+    def backward(self,grad):
+        x,axis,keepdims=self.saved
+        # if axes were reduced, restore to broadcast grad correctly
+        if not keepdims:
+            axis=tuple(range(x.ndim)) if axis is None else axis
+            grad=np.expand_dims(grad,axis)
+        return np.broadcast_to(grad,x.shape)
 
 class CosFn(Fn):
-    def forward(self,x): return np.cos(x.v)
-    def backward(self,grad,x): return -grad*np.sin(x.v)
+    def forward(self,x):
+        self.saved=x.v
+        return np.cos(self.saved)
+    def backward(self,grad): return -grad*np.sin(self.saved)
 
 class SinFn(Fn):
-    def forward(self,x): return np.sin(x.v)
-    def backward(self,grad,x): return grad*np.cos(x.v)
+    def forward(self,x):
+        self.saved=x.v
+        return np.sin(self.saved)
+    def backward(self,grad): return grad*np.cos(self.saved)
 
 # Here we bundle x@w+b into a single op. This saves a graph node and
 # some calculations. Backward formulas are taken from MatMulFn and
@@ -170,14 +220,19 @@ class SinFn(Fn):
 # 5% reduction in time.
 class LinearFn(Fn):
     def forward(self,x,w,b):
-        z=np.matmul(x.v,w.v)
+        x,w=x.v,w.v
+        z=np.matmul(x,w)
         if b is not None: z+=b.v
+        self.saved=(x,w)
         return z
-    def backward(self,grad,x,w,b): return [
-            np.matmul(grad,w.v.T) if self.needs_grad[0] else None,
-            np.matmul(x.v.T,grad) if self.needs_grad[1] else None,
+
+    def backward(self,grad):
+        x,w=self.saved
+        return (
+            np.matmul(grad,w.T) if self.needs_grad[0] else None,
+            np.matmul(x.T,grad) if self.needs_grad[1] else None,
             grad.sum(axis=0,keepdims=True) if self.needs_grad[2] else None
-    ]
+        )
 
 
 class no_grad:
@@ -315,12 +370,12 @@ class Tensor:
 
             if t.fn:
                 if len(t.fn.args)==1:
-                    lst.append((t.fn.args[0],t.fn._backward(tgrad)))
+                    lst.append((t.fn.args[0],t.fn.backward(tgrad)))
                 else:
                     lst.extend([
                         (arg,grad)
                         for arg,needs_grad,grad in
-                        zip(t.fn.args,t.fn.needs_grad,t.fn._backward(tgrad))
+                        zip(t.fn.args,t.fn.needs_grad,t.fn.backward(tgrad))
                         if needs_grad
                     ])
 
