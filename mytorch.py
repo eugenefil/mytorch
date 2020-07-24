@@ -1,5 +1,7 @@
 import numpy as np
 
+import _mytorch
+
 rs=np.random.RandomState()
 
 float32=np.float32
@@ -188,6 +190,16 @@ class SigmoidFn(Fn):
         one,res=self.saved
         return grad*res*(one-res)
 
+class ReLUFn(Fn):
+    def forward(self,x):
+        self.saved=np.maximum(x.v,0.)
+        return self.saved
+
+    def backward(self,grad):
+        grad=grad.copy()
+        grad[self.saved==0.]=0.
+        return grad
+
 class LogSoftmaxFn(Fn):
     def forward(self,x):
         # Plain softmax is unstable due to possible exp()
@@ -241,6 +253,14 @@ class GetItemFn(Fn):
         out[key]=grad
         return out
 
+class ReshapeFn(Fn):
+    def forward(self,x,shape):
+        self.args=(x,)
+        x=x.v
+        self.saved=x.shape
+        return x.reshape(shape)
+    def backward(self,grad): return grad.reshape(self.saved)
+
 class SumFn(Fn):
     def forward(self,x,axis=None,keepdims=False):
         x=x.v
@@ -290,6 +310,77 @@ class LinearFn(Fn):
             grad.sum(axis=0,keepdims=True) if self.needs_grad[2] else None
         )
 
+class Conv2dFn(Fn):
+    def forward(self,x,w,b,stride=1,padding=0):
+        x,w=x.v,w.v
+        ch_out,ch_in,ksize_h,ksize_w=w.shape
+        c=ch_in*ksize_h*ksize_w
+        wc=w.reshape((ch_out,c))
+
+        n,ch_in1,h_in,w_in=x.shape
+        assert ch_in1==ch_in # match channels between input and weights
+
+        h_out=(h_in+2*padding-ksize_h)//stride+1
+        w_out=(w_in+2*padding-ksize_w)//stride+1
+        # (n,ch_in,h_in,w_in) -> (n,c,h_out*w_out)
+        xk=_mytorch.extract_kernels(x,ksize_h,ksize_w,stride,padding)
+        self.saved=(xk,wc,w.shape,x.shape,stride,padding)
+        # bcast wc (ch_out,c) -> (n,ch_out,c),
+        # (n,ch_out,c) @ (n,c,h_out*w_out) = (n,ch_out,h_out*w_out)
+        res=np.matmul(wc,xk)
+
+        if b is not None:
+            b=b.v
+            assert b.shape==(ch_out,)
+            b=b.reshape((ch_out,1))
+            # bcast b (ch_out,1) -> (n,ch_out,h_out*w_out)
+            res+=b
+
+        return res.reshape(n,ch_out,h_out,w_out)
+
+    def backward(self,grad):
+        xk,wc,w_shape,x_shape,stride,padding=self.saved
+        # flatten channels (n,ch_out,h_out,w_out) -> (n,ch_out,h_out*w_out)
+        grad=grad.reshape(grad.shape[:2]+(-1,))
+        if self.needs_grad[0]:
+            # bcast wc.T (c,ch_out) -> (n,c,ch_out),
+            # (n,c,ch_out) @ (n,ch_out,h_out*w_out) = (n,c,h_out*w_out)
+            xk_grad=np.matmul(wc.T,grad)
+            ch_in,h_in,w_in=x_shape[1:]
+            ksize_h,ksize_w=w_shape[2:]
+            # (n,c,h_out*w_out) -> (n,ch_in,h_in,w_in)
+            x_grad=_mytorch.extract_kernels_backward(xk_grad,
+                                                     ch_in,h_in,w_in,
+                                                     ksize_h,ksize_w,
+                                                     stride,padding)
+
+        if self.needs_grad[1]:
+            # transpose xk (n,c,h_out*w_out) -> (n,h_out*w_out,c),
+            # (n,ch_out,h_out*w_out) @ (n,h_out*w_out,c) = (n,ch_out,c),
+            # sum (n,ch_out,c) -> (ch_out,c)
+            wc_grad=np.matmul(grad,xk.transpose(0,2,1)).sum(axis=0)
+            # (ch_out,c) -> (ch_out,ch_in,ksize_h,ksize_w)
+            w_grad=wc_grad.reshape(w_shape)
+
+        return (
+            x_grad if self.needs_grad[0] else None,
+            w_grad if self.needs_grad[1] else None,
+            # (n,ch_out,h_out*w_out) -> (ch_out,)
+            grad.sum(axis=(0,2)) if self.needs_grad[2] else None
+        )
+
+class MaxPool2dFn(Fn):
+    def forward(self,x,ksize,stride=1,padding=0):
+        self.args=(x,)
+        x=x.v
+        out,idxs=_mytorch.maxpool2d(x,ksize,stride,padding)
+        self.saved=(idxs,*x.shape[2:])
+        return out
+
+    def backward(self,grad):
+        idxs,h_in,w_in=self.saved
+        return _mytorch.maxpool2d_backward(grad,idxs,h_in,w_in)
+
 
 class Tensor:
     do_grad=True
@@ -322,7 +413,7 @@ class Tensor:
     def __matmul__(self,other): return MatMulFn()(self,other)
     def __rmatmul__(self,other): return MatMulFn()(other,self)
 
-    def __eq__(self,other): return Tensor(self.v==other.v)
+    def __eq__(self,other): return Tensor(self.v==strip(other))
     def __le__(self,other): return Tensor(self.v<=other.v)
     def __lt__(self,other): return Tensor(self.v<other.v)
     def __bool__(self): return bool(self.v)
@@ -361,12 +452,15 @@ class Tensor:
             n=self.v.dtype.type(n)
         return self.sum(axis=axis,**kws)/n
 
+    def var(self): return Tensor(self.v.var())
+    def std(self): return Tensor(self.v.std())
+
     def exp(self): return ExpFn()(self)
     def log(self): return LogFn()(self)
     def sigmoid(self): return SigmoidFn()(self)
-    def log_softmax(self): return LogSoftmaxFn()(self)
-    def reshape(self,shape): return Tensor(self.v.reshape(shape))
+    def reshape(self,shape): return ReshapeFn()(self,shape)
     def argmax(self,**kws): return Tensor(self.v.argmax(**kws))
+    def all(self): return Tensor(self.v.all())
     
     def zero_(self):
         if self.do_grad and Tensor.do_grad:
@@ -385,6 +479,10 @@ class Tensor:
         if not self.do_grad: raise TypeError("this tensor doesn't require gradients")
         backward(self,**kws)
 
+    def do_grad_(self,do_grad=True):
+        self.do_grad=do_grad
+        return self
+
     @property
     def grad(self): return self._grad
     @grad.setter
@@ -400,6 +498,7 @@ class Tensor:
     def ndim(self): return self.v.ndim
 
 
+def tensor(v,**kws): return Tensor(iterstrip(v),**kws)
 def strip(t): return t.v if isinstance(t,Tensor) else t
 def iterstrip(t):
     try: iter(t)
@@ -409,14 +508,35 @@ def iterstrip(t):
 def zeros(shape,do_grad=False):
     return Tensor(np.zeros(shape),do_grad=do_grad)
 def zeros_like(*args,**kws): return Tensor(np.zeros_like(*args,**kws))
-def ones(shape): return Tensor(np.ones(shape))
-def arange(*args,**kws): return Tensor(np.arange(*args,**kws))
+def ones(shape,do_grad=False):
+    return Tensor(np.ones(shape),do_grad=do_grad)
+def arange(*args,dtype=None,do_grad=False):
+    return Tensor(np.arange(*args,dtype=dtype),do_grad=do_grad)
+
 def randn(*args,do_grad=False):
     return Tensor(rs.randn(*args),do_grad=do_grad)
+
+def normal(mean,std,size,do_grad=False):
+    return Tensor(rs.normal(mean,std,size),do_grad=do_grad)
+
 def randperm(n): return Tensor(rs.permutation(n))
 def linspace(*args): return Tensor(np.linspace(*args))
+
+def log_softmax(x): return LogSoftmaxFn()(x)
 def linear(x,w,b=None): return LinearFn()(x,w,b)
-def tensor(v,**kws): return Tensor(iterstrip(v),**kws)
+def relu(x): return ReLUFn()(x)
+
+def conv2d(x,w,b=None,stride=1,padding=0):
+    return Conv2dFn()(x,w,b,stride=stride,padding=padding)
+
+def maxpool2d(x,ksize,stride=1,padding=0):
+    return MaxPool2dFn()(x,ksize,stride=stride,padding=padding)
+
+def nll_loss(x,targ):
+    n=len(x)
+    return -x[arange(n),targ].sum()/x.dtype.type(n)
+
+def cross_entropy(x,targ): return nll_loss(log_softmax(x),targ)
 
 def manual_seed(seed): rs.seed(seed)
 
@@ -435,6 +555,8 @@ class Module:
             p.to_(dtype)
         return self
 
+    def __call__(self,*args,**kws): return self.forward(*args,**kws)
+
 class Linear(Module):
     def __init__(self,n_in,n_out,bias=True):
         self.modules=[self]
@@ -442,24 +564,82 @@ class Linear(Module):
         self.b=None
         if bias: self.b=zeros((1,n_out),do_grad=True)
 
-    def __call__(self,x): return linear(x,self.w,self.b)
+    def forward(self,x): return linear(x,self.w,self.b)
 
-class Sigmoid:
-    def __call__(self,x): return x.sigmoid()
+class Sigmoid(Module):
+    def forward(self,x): return x.sigmoid()
 
-class Softmax:
-    def __call__(self,x):
+class ReLU(Module):
+    def forward(self,x): return relu(x)
+
+class Softmax(Module):
+    def forward(self,x):
         e=x.exp()
         return e/e.sum(axis=1,keepdims=True)
 
-class LogSoftmax:
-    def __call__(self,x): return x.log_softmax()
+class LogSoftmax(Module):
+    def forward(self,x): return log_softmax(x)
 
 class Seq(Module):
     def __init__(self,*modules):
         self.modules=modules
 
-    def __call__(self,x):
+    def forward(self,x):
         for m in self.modules:
             x=m(x)
         return x
+
+class Conv2d(Module):
+    def __init__(self,ch_in,ch_out,ksize,stride=1,padding=0):
+        self.stride,self.padding=stride,padding
+        std=(2./(ch_in*ksize*ksize))**.5 # kaiming init for relu
+        self.w=normal(0.,std,(ch_out,ch_in,ksize,ksize),do_grad=True)
+        self.b=zeros(ch_out,do_grad=True)
+
+    def forward(self,x):
+        return conv2d(x,self.w,self.b,stride=self.stride,
+                      padding=self.padding)
+
+class MaxPool2d(Module):
+    def __init__(self,ksize,stride=1,padding=0):
+        self.ksize,self.stride,self.padding=ksize,stride,padding
+
+    def forward(self,x):
+        return maxpool2d(x,self.ksize,self.stride,self.padding)
+
+
+class TensorDataset:
+    def __init__(self,*ts):
+        for t in ts:
+            assert t.shape[0]==ts[0].shape[0],'tensors must be of the same shape'
+        self.ts=ts
+
+    def __getitem__(self,key): return tuple(t[key] for t in self.ts)
+    def __len__(self): return len(self.ts[0])
+
+class DataLoader:
+    def __init__(self,ds,bs=1,shuffle=False):
+        self.ds,self.bs,self.shuffle=ds,bs,shuffle
+
+    def __iter__(self):
+        n=len(self.ds)
+        if self.shuffle: idxs=randperm(n)
+        else: idxs=arange(n)
+        for i in range(0,n,self.bs):
+            yield self.ds[idxs[i:i+self.bs].v]
+
+    def __len__(self): return len(self.ds)
+
+
+class SGD:
+    def __init__(self,params,lr):
+        self.params,self.lr=params,lr
+
+    @no_grad()
+    def step(self):
+        for p in self.params:
+            p-=self.lr*p.grad
+
+    def zero_grad(self):
+        for p in self.params:
+            p.grad.zero_()
