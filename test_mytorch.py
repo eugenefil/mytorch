@@ -197,3 +197,16 @@ def test_relu():
     assert (to_torch(y)==yt).all()
     yt.sum().backward()
     assert (x.grad==xt.grad.numpy()).all()
+
+def near(x,y,eps): return abs(x-y)<eps
+
+def test_kaiming_normal():
+    t=mytorch.ones((50,200))
+    mytorch.kaiming_normal_(t)
+    assert near(t.mean(),0.,.01)
+    assert near(t.var(),.04,.001)
+
+    t=mytorch.ones((100,4,5,5))
+    mytorch.kaiming_normal_(t)
+    assert near(t.mean(),0.,.01)
+    assert near(t.var(),.02,.001)

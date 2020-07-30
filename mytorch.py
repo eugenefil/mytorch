@@ -49,12 +49,16 @@ class Fn:
 
 
 @no_grad()
-def backward(t,create_graph=False):
+def backward(t,grad=None,create_graph=False):
     # since grad calculation is internal stuff, during graph
     # traversal running gradient is stored as numpy array instead
     # of Tensor object to avoid extra funcalls, but at leaves
     # numpy is converted to Tensor
-    lst=[(t,t.v.dtype.type(1))] # (tensor,running gradient)
+    if grad is None: grad=np.ones_like(t.v)
+    else: grad=np.asarray(strip(grad))
+    assert t.v.shape==grad.shape,"shape of gradient doesn't match tensor"
+    assert t.v.dtype==grad.dtype,"dtype of gradient doesn't match tensor"
+    lst=[(t,grad)] # (tensor,running gradient)
     while lst:
         t,tgrad=lst.pop()
         # if tensor was broadcasted, so grad has different shape,
@@ -408,6 +412,7 @@ class Tensor:
         self.v-=strip(other)
         return self
 
+    def __abs__(self): return Tensor(abs(self.v))
     def __pow__(self,other): return PowFn()(self,other)
     def __rpow__(self,other): return RPowFn()(other,self)
     def __matmul__(self,other): return MatMulFn()(self,other)
@@ -415,7 +420,7 @@ class Tensor:
 
     def __eq__(self,other): return Tensor(self.v==strip(other))
     def __le__(self,other): return Tensor(self.v<=other.v)
-    def __lt__(self,other): return Tensor(self.v<other.v)
+    def __lt__(self,other): return Tensor(self.v<strip(other))
     def __bool__(self): return bool(self.v)
     
     def __repr__(self):
@@ -435,6 +440,7 @@ class Tensor:
     def sin(self): return SinFn()(self)
     def sqrt(self): return PowFn()(self,.5)
     def sum(self,**kws): return SumFn()(self,**kws)
+    def abs(self): return abs(self)
 
     def mean(self,axis=None,**kws):
         ax=axis
@@ -475,9 +481,19 @@ class Tensor:
         if self._grad is not None: self._grad.to_(dtype)
         return self
 
-    def backward(self,**kws):
+    def to(self,dtype):
+        v=np.asarray(self.v,dtype=dtype)
+        if v is self.v: return self
+
+        t=Tensor(v,do_grad=self.do_grad)
+        if self._grad is not None: t._grad=self._grad.to(dtype)
+        return t
+
+    def float(self): return self.to(float32)
+
+    def backward(self,*args,**kws):
         if not self.do_grad: raise TypeError("this tensor doesn't require gradients")
-        backward(self,**kws)
+        backward(self,*args,**kws)
 
     def do_grad_(self,do_grad=True):
         self.do_grad=do_grad
@@ -505,8 +521,12 @@ def iterstrip(t):
     except TypeError: return strip(t)
     return [strip(el) for el in t]
 
+def empty(shape,do_grad=False):
+    return Tensor(np.empty(shape),do_grad=do_grad)
+
 def zeros(shape,do_grad=False):
     return Tensor(np.zeros(shape),do_grad=do_grad)
+
 def zeros_like(*args,**kws): return Tensor(np.zeros_like(*args,**kws))
 def ones(shape,do_grad=False):
     return Tensor(np.ones(shape),do_grad=do_grad)
@@ -515,6 +535,7 @@ def arange(*args,dtype=None,do_grad=False):
 
 def randn(*args,do_grad=False):
     return Tensor(rs.randn(*args),do_grad=do_grad)
+def randn_like(t): return randn(*t.v.shape)
 
 def normal(mean,std,size,do_grad=False):
     return Tensor(rs.normal(mean,std,size),do_grad=do_grad)
@@ -541,10 +562,27 @@ def cross_entropy(x,targ): return nll_loss(log_softmax(x),targ)
 def manual_seed(seed): rs.seed(seed)
 
 
+def kaiming_normal_(t):
+    assert t.ndim>=2
+    if t.ndim==2:
+        fan_in=t.shape[0]
+    else:
+        fan_in=1
+        for n in t.shape[1:]:
+            fan_in*=n
+
+    std=np.sqrt(2./fan_in)
+    t.v=rs.normal(0.,std,t.shape)
+    return t
+
+
 class Module:
+    def __init__(self):
+        self.hooks=[]
+
     def params(self):
         p=[]
-        for m in self.modules:
+        for m in self._modules:
             if hasattr(m,'w'):
                 p.append(m.w)
                 if m.b is not None: p.append(m.b)
@@ -555,12 +593,21 @@ class Module:
             p.to_(dtype)
         return self
 
-    def __call__(self,*args,**kws): return self.forward(*args,**kws)
+    def __call__(self,x):
+        out=self.forward(x)
+        if self.hooks: [h(self,x,out) for h in self.hooks]
+        return out
+
+    def add_forward_hook(self,hook):
+        self.hooks.append(hook)
+
+    def __getitem__(self,key): return self._modules[key]
 
 class Linear(Module):
     def __init__(self,n_in,n_out,bias=True):
-        self.modules=[self]
-        self.w=randn(n_in,n_out,do_grad=True)
+        super().__init__()
+        self._modules=[self]
+        self.w=kaiming_normal_(empty((n_in,n_out),do_grad=True))
         self.b=None
         if bias: self.b=zeros((1,n_out),do_grad=True)
 
@@ -582,15 +629,17 @@ class LogSoftmax(Module):
 
 class Seq(Module):
     def __init__(self,*modules):
-        self.modules=modules
+        super().__init__()
+        self._modules=modules
 
     def forward(self,x):
-        for m in self.modules:
+        for m in self._modules:
             x=m(x)
         return x
 
 class Conv2d(Module):
     def __init__(self,ch_in,ch_out,ksize,stride=1,padding=0):
+        super().__init__()
         self.stride,self.padding=stride,padding
         std=(2./(ch_in*ksize*ksize))**.5 # kaiming init for relu
         self.w=normal(0.,std,(ch_out,ch_in,ksize,ksize),do_grad=True)
@@ -602,6 +651,7 @@ class Conv2d(Module):
 
 class MaxPool2d(Module):
     def __init__(self,ksize,stride=1,padding=0):
+        super().__init__()
         self.ksize,self.stride,self.padding=ksize,stride,padding
 
     def forward(self,x):
@@ -632,14 +682,15 @@ class DataLoader:
 
 
 class SGD:
-    def __init__(self,params,lr):
-        self.params,self.lr=params,lr
+    def __init__(self,params,lr,zero_grad=True):
+        self.params,self.lr,self._zero_grad=params,lr,zero_grad
 
     @no_grad()
     def step(self):
         for p in self.params:
             p-=self.lr*p.grad
+        if self._zero_grad: self.zero_grad()
 
     def zero_grad(self):
         for p in self.params:
-            p.grad.zero_()
+            if p.grad is not None: p.grad.zero_()
