@@ -499,6 +499,14 @@ class Tensor:
         self.do_grad=do_grad
         return self
 
+    def detach_(self):
+        self.do_grad=False
+        self._grad=None
+        self.fn=None
+        return self
+
+    def detach(self): return Tensor(self.v)
+
     @property
     def grad(self): return self._grad
     @grad.setter
@@ -578,11 +586,13 @@ def kaiming_normal_(t):
 
 class Module:
     def __init__(self):
+        self._modules=[]
         self.hooks=[]
+        self.extra_repr=''
 
     def params(self):
         p=[]
-        for m in self._modules:
+        for m in [self]+self._modules:
             if hasattr(m,'w'):
                 p.append(m.w)
                 if m.b is not None: p.append(m.b)
@@ -602,14 +612,32 @@ class Module:
         self.hooks.append(hook)
 
     def __getitem__(self,key): return self._modules[key]
+    def __len__(self): return len(self._modules)
+
+    def __repr__(self):
+        lines=[]
+        for i,m in enumerate(self._modules):
+            mlines=repr(m).split('\n')
+            mlines[0]='%s: %s' % (i,mlines[0])
+            lines.extend(mlines)
+
+        extra=self.extra_repr
+        # currently parens are for children OR for extra
+        assert not (lines and extra)
+        s=self.__class__.__name__
+        if extra: s+='('+extra+')'
+        if lines: s+='(\n'+'\n'.join(['  '+l for l in lines])+'\n)'
+        return s
+
+    __str__=__repr__
 
 class Linear(Module):
     def __init__(self,n_in,n_out,bias=True):
         super().__init__()
-        self._modules=[self]
         self.w=kaiming_normal_(empty((n_in,n_out),do_grad=True))
         self.b=None
         if bias: self.b=zeros((1,n_out),do_grad=True)
+        self.extra_repr='n_in=%d, n_out=%d, bias=%s' % (n_in,n_out,bias)
 
     def forward(self,x): return linear(x,self.w,self.b)
 
@@ -630,7 +658,7 @@ class LogSoftmax(Module):
 class Seq(Module):
     def __init__(self,*modules):
         super().__init__()
-        self._modules=modules
+        self._modules=list(modules)
 
     def forward(self,x):
         for m in self._modules:
@@ -641,9 +669,10 @@ class Conv2d(Module):
     def __init__(self,ch_in,ch_out,ksize,stride=1,padding=0):
         super().__init__()
         self.stride,self.padding=stride,padding
-        std=(2./(ch_in*ksize*ksize))**.5 # kaiming init for relu
-        self.w=normal(0.,std,(ch_out,ch_in,ksize,ksize),do_grad=True)
+        self.w=kaiming_normal_(empty((ch_out,ch_in,ksize,ksize),do_grad=True))
         self.b=zeros(ch_out,do_grad=True)
+        self.extra_repr='ch_in=%d, ch_out=%d, ksize=%d, stride=%d, padding=%d' % (
+            ch_in,ch_out,ksize,stride,padding)
 
     def forward(self,x):
         return conv2d(x,self.w,self.b,stride=self.stride,
