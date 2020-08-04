@@ -419,8 +419,10 @@ class Tensor:
     def __rmatmul__(self,other): return MatMulFn()(other,self)
 
     def __eq__(self,other): return Tensor(self.v==strip(other))
+    def __ne__(self,other): return Tensor(self.v!=strip(other))
     def __le__(self,other): return Tensor(self.v<=other.v)
     def __lt__(self,other): return Tensor(self.v<strip(other))
+    def __gt__(self,other): return Tensor(self.v>strip(other))
     def __bool__(self): return bool(self.v)
     
     def __repr__(self):
@@ -466,6 +468,8 @@ class Tensor:
     def sigmoid(self): return SigmoidFn()(self)
     def reshape(self,shape): return ReshapeFn()(self,shape)
     def argmax(self,**kws): return Tensor(self.v.argmax(**kws))
+    def max(self): return Tensor(self.v.max())
+    def min(self): return Tensor(self.v.min())
     def all(self): return Tensor(self.v.all())
     
     def zero_(self):
@@ -597,6 +601,10 @@ class Module:
                 p.append(m.w)
                 if m.b is not None: p.append(m.b)
         return p
+
+    def do_grad_(self,do_grad=True):
+        for p in self.params(): p.do_grad_(do_grad)
+        return self
 
     def to(self,dtype):
         for p in self.params():
