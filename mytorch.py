@@ -399,17 +399,26 @@ class Tensor:
     def __mul__(self,other): return MulFn()(self,other)
     def __rmul__(self,other): return MulFn()(self,other)
     def __truediv__(self,other): return DivFn()(self,other)
+    def __floordiv__(self,other): return Tensor(self.v//strip(other))
     def __rtruediv__(self,other): return RDivFn()(other,self)
     def __add__(self,other): return AddFn()(self,other)
     def __radd__(self,other): return AddFn()(self,other)
     def __sub__(self,other): return SubFn()(self,other)
     def __rsub__(self,other): return RSubFn()(other,self)
+
     def __isub__(self,other):
         if self.do_grad and Tensor.do_grad:
             raise TypeError('in-place operation is prohibited, since it may change the graph')
         # subtract directly, no need for SubFn here, since this op is
         # only allowed when gradient calculation is off
         self.v-=strip(other)
+        return self
+
+    def __imul__(self,other):
+        if self.do_grad and Tensor.do_grad:
+            raise TypeError('in-place operation is prohibited, since it may change the graph')
+        # multiply directly, since gradient calculation is off
+        self.v*=strip(other)
         return self
 
     def __abs__(self): return Tensor(abs(self.v))
@@ -468,9 +477,21 @@ class Tensor:
     def sigmoid(self): return SigmoidFn()(self)
     def reshape(self,shape): return ReshapeFn()(self,shape)
     def argmax(self,**kws): return Tensor(self.v.argmax(**kws))
+
+    def argsort(self,*args,**kws):
+        return Tensor(self.v.argsort(*args,**kws))
+
     def max(self): return Tensor(self.v.max())
     def min(self): return Tensor(self.v.min())
     def all(self): return Tensor(self.v.all())
+
+    def histc(self,bins=10,min=0,max=0):
+        bounds=None
+        if not min==max==0: bounds=(min,max)
+        return Tensor(np.histogram(self.v,bins=bins,range=bounds)[0])
+
+    def histogram(self,*args,**kws):
+        return (*map(tensor,np.histogram(self.v,*args,**kws)),)
     
     def zero_(self):
         if self.do_grad and Tensor.do_grad:
@@ -502,6 +523,13 @@ class Tensor:
     def do_grad_(self,do_grad=True):
         self.do_grad=do_grad
         return self
+
+    # n.b. in torch this op is recorded in the graph, so grads coming
+    # to cloned tensor, also come to original one
+    def clone(self):
+        t=Tensor(self.v.copy(),do_grad=self.do_grad,fn=self.fn)
+        if self._grad is not None: t._grad=Tensor(self._grad.v.copy())
+        return t
 
     def detach_(self):
         self.do_grad=False
@@ -719,12 +747,14 @@ class DataLoader:
 
 
 class SGD:
-    def __init__(self,params,lr,zero_grad=True):
-        self.params,self.lr,self._zero_grad=params,lr,zero_grad
+    def __init__(self,params,lr,l2_decay=0.,zero_grad=True):
+        self.params,self.lr,self.l2_decay=params,lr,l2_decay
+        self._zero_grad=zero_grad
 
     @no_grad()
     def step(self):
         for p in self.params:
+            if self.l2_decay>0.: p*=1.-self.l2_decay
             p-=self.lr*p.grad
         if self._zero_grad: self.zero_grad()
 
