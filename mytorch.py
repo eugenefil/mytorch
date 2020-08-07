@@ -576,6 +576,8 @@ def arange(*args,dtype=None,do_grad=False):
 def randn(*args,do_grad=False):
     return Tensor(rs.randn(*args),do_grad=do_grad)
 def randn_like(t): return randn(*t.v.shape)
+def rand(*args,do_grad=False):
+    return Tensor(rs.rand(*args),do_grad=do_grad)
 
 def normal(mean,std,size,do_grad=False):
     return Tensor(rs.normal(mean,std,size),do_grad=do_grad)
