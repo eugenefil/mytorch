@@ -1,4 +1,5 @@
 import numpy as np
+import cupy as cp
 
 import _mytorch
 
@@ -385,12 +386,44 @@ class MaxPool2dFn(Fn):
         idxs,h_in,w_in=self.saved
         return _mytorch.maxpool2d_backward(grad,idxs,h_in,w_in)
 
+class CUDAFn(Fn):
+    def forward(self,x): return cp.asarray(x.v)
+    def backward(self,grad): return cp.asnumpy(grad)
+
+
+class Device:
+    def __init__(self,type,index=None):
+        self.type=type
+        self.index=index
+
+    def __repr__(self):
+        if self.type=='cpu':
+            return self.type
+        else:
+            return self.type+':'+str(self.index)
+
+    __str__=__repr__
+
+def cuda_is_available():
+    try: cp.cuda.runtime.getDeviceCount()
+    except: return False
+    return True
+
 
 class Tensor:
     do_grad=True
     
-    def __init__(self,v,do_grad=False,dtype=None,fn=None):
-        self.v=np.asarray(v,dtype=dtype)
+    def __init__(self,v,do_grad=False,dtype=None,device=None,fn=None):
+        am=cp.get_array_module(v)
+        if am is cp:
+            self.device=Device('cuda',v.device.id)
+        elif device=='cuda':
+            am=cp
+            self.device=Device('cuda',0)
+        else:
+            self.device=Device('cpu')
+        self.v=am.asarray(v,dtype=dtype)
+
         self.do_grad=do_grad
         self._grad=None
         self.fn=fn
@@ -436,10 +469,12 @@ class Tensor:
     
     def __repr__(self):
         r=repr(self.v).replace('array','tensor')
+        if self.device.type=='cuda':
+            r=r[:-1]+f", device='{self.device}')"
         if self.fn:
             r=r[:-1]+f', fn=<{self.fn.__class__.__name__}>)'
         elif self.do_grad:
-            r=r[:-1]+f', do_grad=True)'
+            r=r[:-1]+', do_grad=True)'
         return r
     
     def __getitem__(self,key): return GetItemFn()(self,key)
@@ -500,6 +535,8 @@ class Tensor:
         # w/ zeros_like()
         self.v[...]=0
         return self
+
+    def cuda(self): return CUDAFn()(self)
 
     def to_(self,dtype):
         self.v=np.asarray(self.v,dtype=dtype)
