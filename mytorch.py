@@ -386,14 +386,48 @@ class MaxPool2dFn(Fn):
         idxs,h_in,w_in=self.saved
         return _mytorch.maxpool2d_backward(grad,idxs,h_in,w_in)
 
+class DTypeFn(Fn):
+    def forward(self,x,dtype):
+        self.args=(x,)
+        x=x.v
+        am=cp.get_array_module(x)
+        self.saved=(am,x.dtype)
+        return am.asarray(x,dtype=dtype)
+
+    def backward(self,grad):
+        am,old_dtype=self.saved
+        return am.asarray(grad,dtype=old_dtype)
+
 class CUDAFn(Fn):
-    def forward(self,x): return cp.asarray(x.v)
-    def backward(self,grad): return cp.asnumpy(grad)
+    def forward(self,x,dtype=None):
+        self.args=(x,)
+        x=x.v
+        self.saved=None if dtype is None else x.dtype
+        return cp.asarray(x,dtype=dtype)
+
+    def backward(self,grad):
+        dtype=self.saved
+        res=cp.asnumpy(grad)
+        if dtype is None: return res
+        return np.asarray(res,dtype=dtype)
+
+class CPUFn(Fn):
+    def forward(self,x,dtype=None):
+        self.args=(x,)
+        x=x.v
+        self.saved=None if dtype is None else x.dtype
+        res=cp.asnumpy(x)
+        if dtype is None: return res
+        return np.asarray(res,dtype=dtype)
+
+    def backward(self,grad):
+        return cp.asarray(grad,dtype=self.saved)
 
 
 class Device:
     def __init__(self,type,index=None):
         self.type=type
+        if type=='cuda' and index is None: index=0
         self.index=index
 
     def __repr__(self):
@@ -403,6 +437,10 @@ class Device:
             return self.type+':'+str(self.index)
 
     __str__=__repr__
+
+    def __eq__(self,other):
+        return (self.type==other.type
+                and self.index==other.index)
 
 def cuda_is_available():
     try: cp.cuda.runtime.getDeviceCount()
@@ -419,7 +457,7 @@ class Tensor:
             self.device=Device('cuda',v.device.id)
         elif device=='cuda':
             am=cp
-            self.device=Device('cuda',0)
+            self.device=Device('cuda')
         else:
             self.device=Device('cpu')
         self.v=am.asarray(v,dtype=dtype)
@@ -536,22 +574,30 @@ class Tensor:
         self.v[...]=0
         return self
 
-    def cuda(self): return CUDAFn()(self)
+    def to(self,dtype=None,device=None):
+        old_dev,old_dt=self.device,self.v.dtype
+        new_dev=old_dev if device is None else Device(device)
+        new_dt=old_dt if dtype is None else dtype
+        if new_dev==old_dev:
+            if new_dt==old_dt: return self
+            fn=DTypeFn
+        else:
+            fn=CPUFn if new_dev.type=='cpu' else CUDAFn
+        return fn()(self,dtype)
 
-    def to_(self,dtype):
-        self.v=np.asarray(self.v,dtype=dtype)
-        if self._grad is not None: self._grad.to_(dtype)
+    @no_grad()
+    def _to_(self,dtype=None,device=None):
+        t=self.to(dtype=dtype,device=device)
+        if t is self: return self
+        self.v=t.v
+        self.device=t.device
+        if self._grad is not None:
+            self._grad._to_(dtype=dtype,device=device)
         return self
 
-    def to(self,dtype):
-        v=np.asarray(self.v,dtype=dtype)
-        if v is self.v: return self
-
-        t=Tensor(v,do_grad=self.do_grad)
-        if self._grad is not None: t._grad=self._grad.to(dtype)
-        return t
-
-    def float(self): return self.to(float32)
+    def float(self): return self.to(dtype=float32)
+    def cuda(self): return self.to(device='cuda')
+    def cpu(self): return self.to(device='cpu')
 
     def backward(self,*args,**kws):
         if not self.do_grad: raise TypeError("this tensor doesn't require gradients")
@@ -675,7 +721,7 @@ class Module:
 
     def to(self,dtype):
         for p in self.params():
-            p.to_(dtype)
+            p._to_(dtype=dtype)
         return self
 
     def __call__(self,x):
