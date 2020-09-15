@@ -719,9 +719,9 @@ class Module:
         for p in self.params(): p.do_grad_(do_grad)
         return self
 
-    def to(self,dtype):
+    def to(self,dtype=None,device=None):
         for p in self.params():
-            p._to_(dtype=dtype)
+            p._to_(dtype=dtype,device=device)
         return self
 
     def __call__(self,x):
