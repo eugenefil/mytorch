@@ -1,3 +1,5 @@
+from collections import namedtuple
+
 import numpy as np
 import cupy as cp
 
@@ -51,12 +53,12 @@ class Fn:
 
 @no_grad()
 def backward(t,grad=None,create_graph=False):
-    # since grad calculation is internal stuff, during graph
-    # traversal running gradient is stored as numpy array instead
-    # of Tensor object to avoid extra funcalls, but at leaves
-    # numpy is converted to Tensor
-    if grad is None: grad=np.ones_like(t.v)
-    else: grad=np.asarray(strip(grad))
+    # since grad calculation is internal stuff, during graph traversal
+    # running gradient is passed around as raw array instead of Tensor
+    # object to avoid extra calls, but at leaves it is wrapped into
+    # Tensor
+    if grad is None: grad=t.am.ones_like(t.v)
+    else: grad=t.am.asarray(strip(grad))
     assert t.v.shape==grad.shape,"shape of gradient doesn't match tensor"
     assert t.v.dtype==grad.dtype,"dtype of gradient doesn't match tensor"
     lst=[(t,grad)] # (tensor,running gradient)
@@ -268,18 +270,24 @@ class ReshapeFn(Fn):
 
 class SumFn(Fn):
     def forward(self,x,axis=None,keepdims=False):
-        x=x.v
-        self.saved=(x,axis,keepdims)
-        # note: x.sum() is faster than np.sum(x)
-        return x.sum(axis=axis,keepdims=keepdims)
+        xv=x.v
+        self.saved=(xv,x.am,axis,keepdims)
+        # note: at least for numpy x.sum() is faster than np.sum(x)
+        return xv.sum(axis=axis,keepdims=keepdims)
 
     def backward(self,grad):
-        x,axis,keepdims=self.saved
+        x,am,axis,keepdims=self.saved
         # if axes were reduced, restore to broadcast grad correctly
         if not keepdims:
-            axis=tuple(range(x.ndim)) if axis is None else axis
-            grad=np.expand_dims(grad,axis)
-        return np.broadcast_to(grad,x.shape)
+            if axis is None: axis=range(x.ndim)
+            if isinstance(axis,int):
+                grad=am.expand_dims(grad,axis)
+            else:
+                # unlike numpy, cupy (as of 7.8) doesn't allow axis as
+                # tuple in expand_dims, so we expand one dim at a time
+                for ax in axis:
+                    grad=am.expand_dims(grad,ax)
+        return am.broadcast_to(grad,x.shape)
 
 class CosFn(Fn):
     def forward(self,x):
@@ -315,32 +323,95 @@ class LinearFn(Fn):
             grad.sum(axis=0,keepdims=True) if self.needs_grad[2] else None
         )
 
+def cuda_extract_kernels(x,ksize_h,ksize_w,h_out,w_out,stride,padding,out):
+    assert x.flags.c_contiguous
+    raw=cp.RawModule(code=r'''
+template<typename T>
+__device__ void extract_kernels(
+        const T *x,int N,int h_in,int w_in,
+        int h_out,int w_out,int ksize_h,int ksize_w,
+        int stride,int padding,T *out) {
+    int idx=blockIdx.x*blockDim.x+threadIdx.x;
+    if (idx>=N) return;
+    int sz=h_out*w_out;
+    int k=idx/sz;
+    int w_off=k%ksize_w;
+    int h_off=k/ksize_w%ksize_h;
+    int c_in=k/(ksize_h*ksize_w);
+    int pos=idx%sz;
+    int i=pos/w_out;
+    int j=pos%w_out;
+    int i_in=i*stride+h_off-padding;
+    int j_in=j*stride+w_off-padding;
+    T val;
+    if (i_in<0 || i_in>=h_in || j_in<0 || j_in>=w_in) {
+        val=0.;
+    } else {
+        val=x[(c_in*h_in+i_in)*w_in+j_in];
+    }
+    out[idx]=val;
+}
+
+// cupy only handles templated kernels starting from ver 8, so here we
+// have to define separate wrappers for each float type
+extern "C" {
+__global__ void extract_kernels_float32(
+        const float *x,int N,int h_in,int w_in,
+        int h_out,int w_out,int ksize_h,int ksize_w,
+        int stride,int padding,float *out) {
+    extract_kernels<float>(x,N,h_in,w_in,h_out,w_out,ksize_h,ksize_w,
+        stride,padding,out);
+}
+
+__global__ void extract_kernels_float64(
+        const double *x,int N,int h_in,int w_in,
+        int h_out,int w_out,int ksize_h,int ksize_w,
+        int stride,int padding,double *out) {
+    extract_kernels<double>(x,N,h_in,w_in,h_out,w_out,ksize_h,ksize_w,
+        stride,padding,out);
+}
+}
+''')
+    f=raw.get_function('extract_kernels_'+x.dtype.name)
+    n,ch_in,h_in,w_in=x.shape
+    N=ch_in*ksize_h*ksize_w*h_out*w_out
+    blk=512
+    grid=(N+blk-1)//blk
+    for r in range(n):
+        f((grid,),(blk,),(x,N,h_in,w_in,h_out,w_out,
+                          ksize_h,ksize_w,stride,padding,out[r]))
+    return out
+
 class Conv2dFn(Fn):
     def forward(self,x,w,b,stride=1,padding=0):
-        x,w=x.v,w.v
+        assert x.device==w.device
+        xv,w=x.v,w.v
         ch_out,ch_in,ksize_h,ksize_w=w.shape
         c=ch_in*ksize_h*ksize_w
         wc=w.reshape((ch_out,c))
 
-        n,ch_in1,h_in,w_in=x.shape
+        n,ch_in1,h_in,w_in=xv.shape
         assert ch_in1==ch_in # match channels between input and weights
 
         h_out=(h_in+2*padding-ksize_h)//stride+1
         w_out=(w_in+2*padding-ksize_w)//stride+1
         # (n,ch_in,h_in,w_in) -> (n,c,h_out*w_out)
-        xk=_mytorch.extract_kernels(x,ksize_h,ksize_w,stride,padding)
-        self.saved=(xk,wc,w.shape,x.shape,stride,padding)
+        xk=x.am.empty((n,c,h_out*w_out),dtype=xv.dtype)
+        x.aux.extract_kernels(xv,ksize_h,ksize_w,h_out,w_out,
+                              stride,padding,xk)
         # bcast wc (ch_out,c) -> (n,ch_out,c),
         # (n,ch_out,c) @ (n,c,h_out*w_out) = (n,ch_out,h_out*w_out)
-        res=np.matmul(wc,xk)
+        res=wc@xk
 
         if b is not None:
+            assert b.device==x.device
             b=b.v
             assert b.shape==(ch_out,)
             b=b.reshape((ch_out,1))
             # bcast b (ch_out,1) -> (n,ch_out,h_out*w_out)
             res+=b
 
+        self.saved=(xk,wc,w.shape,xv.shape,stride,padding)
         return res.reshape(n,ch_out,h_out,w_out)
 
     def backward(self,grad):
@@ -350,7 +421,7 @@ class Conv2dFn(Fn):
         if self.needs_grad[0]:
             # bcast wc.T (c,ch_out) -> (n,c,ch_out),
             # (n,c,ch_out) @ (n,ch_out,h_out*w_out) = (n,c,h_out*w_out)
-            xk_grad=np.matmul(wc.T,grad)
+            xk_grad=wc.T@grad
             ch_in,h_in,w_in=x_shape[1:]
             ksize_h,ksize_w=w_shape[2:]
             # (n,c,h_out*w_out) -> (n,ch_in,h_in,w_in)
@@ -363,7 +434,7 @@ class Conv2dFn(Fn):
             # transpose xk (n,c,h_out*w_out) -> (n,h_out*w_out,c),
             # (n,ch_out,h_out*w_out) @ (n,h_out*w_out,c) = (n,ch_out,c),
             # sum (n,ch_out,c) -> (ch_out,c)
-            wc_grad=np.matmul(grad,xk.transpose(0,2,1)).sum(axis=0)
+            wc_grad=(grad@xk.transpose(0,2,1)).sum(axis=0)
             # (ch_out,c) -> (ch_out,ch_in,ksize_h,ksize_w)
             w_grad=wc_grad.reshape(w_shape)
 
@@ -448,6 +519,10 @@ def cuda_is_available():
     return True
 
 
+Aux=namedtuple('Aux',['extract_kernels'])
+aux_cpu=Aux(_mytorch.extract_kernels)
+aux_cuda=Aux(cuda_extract_kernels)
+
 class Tensor:
     do_grad=True
     
@@ -461,6 +536,8 @@ class Tensor:
         else:
             self.device=Device('cpu')
         self.v=am.asarray(v,dtype=dtype)
+        self.am=am
+        self.aux=aux_cuda if am is cp else aux_cpu
 
         self.do_grad=do_grad
         self._grad=None
@@ -586,13 +663,15 @@ class Tensor:
         return fn()(self,dtype)
 
     @no_grad()
-    def _to_(self,dtype=None,device=None):
+    def to_(self,dtype=None,device=None):
         t=self.to(dtype=dtype,device=device)
         if t is self: return self
         self.v=t.v
         self.device=t.device
+        self.am=t.am
+        self.aux=t.aux
         if self._grad is not None:
-            self._grad._to_(dtype=dtype,device=device)
+            self._grad.to_(dtype=dtype,device=device)
         return self
 
     def float(self): return self.to(dtype=float32)
@@ -644,20 +723,20 @@ def iterstrip(t):
     except TypeError: return strip(t)
     return [strip(el) for el in t]
 
-def empty(shape,do_grad=False):
-    return Tensor(np.empty(shape),do_grad=do_grad)
+def empty(shape,dtype=None,do_grad=False,device=None):
+    return Tensor(np.empty(shape),dtype=dtype,do_grad=do_grad,device=device)
 
 def zeros(shape,do_grad=False):
     return Tensor(np.zeros(shape),do_grad=do_grad)
 
 def zeros_like(*args,**kws): return Tensor(np.zeros_like(*args,**kws))
-def ones(shape,do_grad=False):
-    return Tensor(np.ones(shape),do_grad=do_grad)
+def ones(shape,do_grad=False,device=None):
+    return Tensor(np.ones(shape),do_grad=do_grad,device=device)
 def arange(*args,dtype=None,do_grad=False):
     return Tensor(np.arange(*args,dtype=dtype),do_grad=do_grad)
 
-def randn(*args,do_grad=False):
-    return Tensor(rs.randn(*args),do_grad=do_grad)
+def randn(*args,dtype=None,do_grad=False,device=None):
+    return Tensor(rs.randn(*args),dtype=dtype,do_grad=do_grad,device=device)
 def randn_like(t): return randn(*t.v.shape)
 def rand(*args,do_grad=False):
     return Tensor(rs.rand(*args),do_grad=do_grad)
@@ -721,8 +800,14 @@ class Module:
 
     def to(self,dtype=None,device=None):
         for p in self.params():
-            p._to_(dtype=dtype,device=device)
+            p.to_(dtype=dtype,device=device)
         return self
+
+    def cuda(self,device=None):
+        if device is None: device='cuda'
+        return self.to(device=device)
+
+    def cpu(self): return self.to(device='cpu')
 
     def __call__(self,x):
         out=self.forward(x)

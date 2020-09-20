@@ -13,17 +13,12 @@ import numpy as np
 @cython.boundscheck(False)
 def extract_kernels(floating[:,:,:,::1] x,
                     int ksize_h,int ksize_w,
-                    int stride,int padding):
-    cdef Py_ssize_t n,ch_in,h_in,w_in,c,h_out,w_out
+                    int h_out,int w_out,
+                    int stride,int padding,
+                    floating[:,:,::1] out):
+    cdef Py_ssize_t n,ch_in,h_in,w_in,c
     n,ch_in,h_in,w_in=x.shape[:4] # memoryview has 8 slots in shape
     c=ch_in*ksize_h*ksize_w
-    h_out=(h_in+2*padding-ksize_h)//stride+1
-    w_out=(w_in+2*padding-ksize_w)//stride+1
-
-    dtype=np.float # default float is usually float64
-    if floating is float: dtype=np.float32
-    out=np.empty((n,c,h_out*w_out),dtype=dtype)
-    cdef floating[:,:,::1] o=out
 
     cdef Py_ssize_t r,k,i,j,w_off,h_off,c_in,i_in,j_in
     cdef floating val
@@ -40,7 +35,7 @@ def extract_kernels(floating[:,:,:,::1] x,
                         val=0. # padding
                     else:
                         val=x[r,c_in,i_in,j_in]
-                    o[r,k,i*w_out+j]=val
+                    out[r,k,i*w_out+j]=val
     return out
 
 @cython.cdivision(True)
