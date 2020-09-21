@@ -325,6 +325,17 @@ class LinearFn(Fn):
 
 def cuda_extract_kernels(x,ksize_h,ksize_w,h_out,w_out,stride,padding,out):
     assert x.flags.c_contiguous
+    # I tried 2 variants of the kernel: 1) each thread copies one
+    # element/pixel from src to dest 2) each thread copies one full
+    # reception field (ksize_h x ksize_w elts/pixels) of a single
+    # channel. Variant 2 is faster. I guess this is because a thread
+    # has to do a bunch of computations to get src/dest addresses,
+    # etc. And in case 1 this whole bunch is wasted just to copy a
+    # single elt, while in case 2 it is reused for more copies. Also
+    # variant 1 may result in huge num of threads (millions), it may
+    # sometimes also work slower than cpu implementation. Variant 2
+    # originates in caffe library and from there was borrowed by
+    # pytorch, darknet.
     raw=cp.RawModule(code=r'''
 template<typename T>
 __device__ void extract_kernels(
@@ -334,22 +345,24 @@ __device__ void extract_kernels(
     int idx=blockIdx.x*blockDim.x+threadIdx.x;
     if (idx>=N) return;
     int sz=h_out*w_out;
-    int k=idx/sz;
-    int w_off=k%ksize_w;
-    int h_off=k/ksize_w%ksize_h;
-    int c_in=k/(ksize_h*ksize_w);
+    int c_in=idx/sz;
     int pos=idx%sz;
-    int i=pos/w_out;
-    int j=pos%w_out;
-    int i_in=i*stride+h_off-padding;
-    int j_in=j*stride+w_off-padding;
-    T val;
-    if (i_in<0 || i_in>=h_in || j_in<0 || j_in>=w_in) {
-        val=0.;
-    } else {
-        val=x[(c_in*h_in+i_in)*w_in+j_in];
+    int i0=(pos/w_out)*stride-padding;
+    int j0=(pos%w_out)*stride-padding;
+    const T *x0=x+(c_in*h_in+i0)*w_in+j0;
+    T *pout=out+c_in*sz*ksize_h*ksize_w+pos;
+    for (int h_off=0;h_off<ksize_h;h_off++) {
+        int i_in=i0+h_off;
+        for (int w_off=0;w_off<ksize_w;w_off++) {
+            int j_in=j0+w_off;
+            if (i_in<0 || i_in>=h_in || j_in<0 || j_in>=w_in) {
+                *pout=0.;
+            } else {
+                *pout=x0[h_off*w_in+w_off];
+            }
+            pout+=sz;
+        }
     }
-    out[idx]=val;
 }
 
 // cupy only handles templated kernels starting from ver 8, so here we
@@ -374,7 +387,7 @@ __global__ void extract_kernels_float64(
 ''')
     f=raw.get_function('extract_kernels_'+x.dtype.name)
     n,ch_in,h_in,w_in=x.shape
-    N=ch_in*ksize_h*ksize_w*h_out*w_out
+    N=ch_in*h_out*w_out
     blk=512
     grid=(N+blk-1)//blk
     for r in range(n):
