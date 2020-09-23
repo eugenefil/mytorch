@@ -323,7 +323,8 @@ class LinearFn(Fn):
             grad.sum(axis=0,keepdims=True) if self.needs_grad[2] else None
         )
 
-def cuda_extract_kernels(x,ksize_h,ksize_w,h_out,w_out,stride,padding,out):
+def cuda_extract_kernels(x,ksize_h,ksize_w,stride,padding,
+                         h_out,w_out,out):
     assert x.flags.c_contiguous
     raw=cp.RawModule(code=r'''
 template<typename T>
@@ -386,6 +387,10 @@ __global__ void extract_kernels_float64(
                       ksize_h,ksize_w,stride,padding,out))
     return out
 
+def cuda_extract_kernels_backward(x,ksize_h,ksize_w,stride,padding,
+                                  h_out,w_out,out):
+    return
+
 class Conv2dFn(Fn):
     def forward(self,x,w,b,stride=1,padding=0):
         assert x.device==w.device
@@ -399,10 +404,10 @@ class Conv2dFn(Fn):
 
         h_out=(h_in+2*padding-ksize_h)//stride+1
         w_out=(w_in+2*padding-ksize_w)//stride+1
-        # (n,ch_in,h_in,w_in) -> (n,c,h_out*w_out)
         xk=x.am.empty((n,c,h_out*w_out),dtype=xv.dtype)
-        x.aux.extract_kernels(xv,ksize_h,ksize_w,h_out,w_out,
-                              stride,padding,xk)
+        # (n,ch_in,h_in,w_in) -> (n,c,h_out*w_out)
+        x.aux.extract_kernels(xv,ksize_h,ksize_w,stride,padding,
+                              h_out,w_out,xk)
         # bcast wc (ch_out,c) -> (n,ch_out,c),
         # (n,ch_out,c) @ (n,c,h_out*w_out) = (n,ch_out,h_out*w_out)
         res=wc@xk
@@ -415,24 +420,23 @@ class Conv2dFn(Fn):
             # bcast b (ch_out,1) -> (n,ch_out,h_out*w_out)
             res+=b
 
-        self.saved=(xk,wc,w.shape,xv.shape,stride,padding)
+        self.saved=(xk,wc,w.shape,xv.shape,stride,padding,x.am,x.aux)
         return res.reshape(n,ch_out,h_out,w_out)
 
     def backward(self,grad):
-        xk,wc,w_shape,x_shape,stride,padding=self.saved
-        # flatten channels (n,ch_out,h_out,w_out) -> (n,ch_out,h_out*w_out)
-        grad=grad.reshape(grad.shape[:2]+(-1,))
+        xk,wc,w_shape,x_shape,stride,padding,am,aux=self.saved
+        n,ch_out,h_out,w_out=grad.shape
+        grad=grad.reshape((n,ch_out,h_out*w_out))
         if self.needs_grad[0]:
             # bcast wc.T (c,ch_out) -> (n,c,ch_out),
             # (n,c,ch_out) @ (n,ch_out,h_out*w_out) = (n,c,h_out*w_out)
             xk_grad=wc.T@grad
-            ch_in,h_in,w_in=x_shape[1:]
             ksize_h,ksize_w=w_shape[2:]
+            x_grad=am.zeros(x_shape,dtype=grad.dtype)
             # (n,c,h_out*w_out) -> (n,ch_in,h_in,w_in)
-            x_grad=_mytorch.extract_kernels_backward(xk_grad,
-                                                     ch_in,h_in,w_in,
-                                                     ksize_h,ksize_w,
-                                                     stride,padding)
+            aux.extract_kernels_backward(xk_grad,ksize_h,ksize_w,
+                                         stride,padding,
+                                         h_out,w_out,x_grad)
 
         if self.needs_grad[1]:
             # transpose xk (n,c,h_out*w_out) -> (n,h_out*w_out,c),
@@ -523,9 +527,18 @@ def cuda_is_available():
     return True
 
 
-Aux=namedtuple('Aux',['extract_kernels'])
-aux_cpu=Aux(_mytorch.extract_kernels)
-aux_cuda=Aux(cuda_extract_kernels)
+Aux=namedtuple('Aux',[
+    'extract_kernels',
+    'extract_kernels_backward'
+])
+aux_cpu=Aux(
+    _mytorch.extract_kernels,
+    _mytorch.extract_kernels_backward
+)
+aux_cuda=Aux(
+    cuda_extract_kernels,
+    cuda_extract_kernels_backward
+)
 
 class Tensor:
     do_grad=True

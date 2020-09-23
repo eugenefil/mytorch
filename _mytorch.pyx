@@ -13,8 +13,8 @@ import numpy as np
 @cython.boundscheck(False)
 def extract_kernels(floating[:,:,:,::1] x,
                     int ksize_h,int ksize_w,
-                    int h_out,int w_out,
                     int stride,int padding,
+                    int h_out,int w_out,
                     floating[:,:,::1] out):
     cdef Py_ssize_t n,ch_in,h_in,w_in,c
     n,ch_in,h_in,w_in=x.shape[:4] # memoryview has 8 slots in shape
@@ -42,21 +42,13 @@ def extract_kernels(floating[:,:,:,::1] x,
 @cython.wraparound(False)
 @cython.boundscheck(False)
 def extract_kernels_backward(floating[:,:,::1] grad,
-                             int ch_in,int h_in,int w_in,
                              int ksize_h,int ksize_w,
-                             int stride,int padding):
-    cdef Py_ssize_t n,c,h_out_by_w_out,h_out,w_out
-    n,c,h_out_by_w_out=grad.shape[:3] # memoryview has 8 slots in shape
-    assert c == ch_in*ksize_h*ksize_w
-
-    h_out=(h_in+2*padding-ksize_h)//stride+1
-    w_out=(w_in+2*padding-ksize_w)//stride+1
-    assert h_out_by_w_out == h_out*w_out
-
-    dtype=np.float # default float is usually float64
-    if floating is float: dtype=np.float32
-    out=np.zeros((n,ch_in,h_in,w_in),dtype=dtype)
-    cdef floating[:,:,:,::1] o=out
+                             int stride,int padding,
+                             int h_out,int w_out,
+                             floating[:,:,:,::1] out):
+    cdef Py_ssize_t n,ch_in,h_in,w_in,c
+    n,ch_in,h_in,w_in=out.shape[:4] # memoryview has 8 slots in shape
+    c=ch_in*ksize_h*ksize_w
 
     cdef Py_ssize_t r,k,i,j,w_off,h_off,c_in,i_in,j_in
     for r in prange(n,nogil=True):
@@ -69,7 +61,7 @@ def extract_kernels_backward(floating[:,:,::1] grad,
                 for j in range(w_out):
                     j_in=j*stride+w_off-padding
                     if 0<=i_in and i_in<h_in and 0<=j_in and j_in<w_in:
-                        o[r,c_in,i_in,j_in]+=grad[r,k,i*w_out+j]
+                        out[r,c_in,i_in,j_in]+=grad[r,k,i*w_out+j]
     return out
 
 @cython.cdivision(True)
