@@ -329,21 +329,18 @@ def cuda_extract_kernels(x,ksize_h,ksize_w,stride,padding,
     raw=cp.RawModule(code=r'''
 template<typename T>
 __device__ void extract_kernels(
-        const T *x,int N,int ch_in,int h_in,int w_in,
-        int h_out,int w_out,int ksize_h,int ksize_w,
-        int stride,int padding,T *out) {
+        const T *x,int N,int h_in,int w_in,
+        int ksize_h,int ksize_w,int stride,int padding,
+        int h_out,int w_out,T *out) {
     int idx=blockIdx.x*blockDim.x+threadIdx.x;
     if (idx>=N) return;
     int sz=h_out*w_out;
-    int chsz=ch_in*sz;
-    int r=idx/chsz;
-    idx=idx%chsz;
     int c_in=idx/sz;
     idx=idx%sz;
     int i0=(idx/w_out)*stride-padding;
     int j0=(idx%w_out)*stride-padding;
-    const T *x0=x+((r*ch_in+c_in)*h_in+i0)*w_in+j0;
-    T *pout=out+(r*ch_in+c_in)*sz*ksize_h*ksize_w+idx;
+    const T *x0=x+(c_in*h_in+i0)*w_in+j0;
+    T *pout=out+c_in*ksize_h*ksize_w*sz+idx;
     for (int h_off=0;h_off<ksize_h;h_off++) {
         int i_in=i0+h_off;
         for (int w_off=0;w_off<ksize_w;w_off++) {
@@ -362,19 +359,19 @@ __device__ void extract_kernels(
 // have to define separate wrappers for each float type
 extern "C" {
 __global__ void extract_kernels_float32(
-        const float *x,int N,int ch_in,int h_in,int w_in,
-        int h_out,int w_out,int ksize_h,int ksize_w,
-        int stride,int padding,float *out) {
-    extract_kernels<float>(x,N,ch_in,h_in,w_in,h_out,w_out,
-        ksize_h,ksize_w,stride,padding,out);
+        const float *x,int N,int h_in,int w_in,
+        int ksize_h,int ksize_w,int stride,int padding,
+        int h_out,int w_out,float *out) {
+    extract_kernels<float>(x,N,h_in,w_in,ksize_h,ksize_w,
+        stride,padding,h_out,w_out,out);
 }
 
 __global__ void extract_kernels_float64(
-        const double *x,int N,int ch_in,int h_in,int w_in,
-        int h_out,int w_out,int ksize_h,int ksize_w,
-        int stride,int padding,double *out) {
-    extract_kernels<double>(x,N,ch_in,h_in,w_in,h_out,w_out,
-        ksize_h,ksize_w,stride,padding,out);
+        const double *x,int N,int h_in,int w_in,
+        int ksize_h,int ksize_w,int stride,int padding,
+        int h_out,int w_out,double *out) {
+    extract_kernels<double>(x,N,h_in,w_in,ksize_h,ksize_w,
+        stride,padding,h_out,w_out,out);
 }
 }
 ''')
@@ -383,9 +380,8 @@ __global__ void extract_kernels_float64(
     N=n*ch_in*h_out*w_out
     blk=512
     grid=(N+blk-1)//blk
-    f((grid,),(blk,),(x,N,ch_in,h_in,w_in,h_out,w_out,
-                      ksize_h,ksize_w,stride,padding,out))
-    return out
+    f((grid,),(blk,),(x,N,h_in,w_in,ksize_h,ksize_w,
+                      stride,padding,h_out,w_out,out))
 
 def cuda_extract_kernels_backward(x,ksize_h,ksize_w,stride,padding,
                                   h_out,w_out,out):

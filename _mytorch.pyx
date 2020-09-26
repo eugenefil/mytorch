@@ -36,7 +36,6 @@ def extract_kernels(floating[:,:,:,::1] x,
                     else:
                         val=x[r,c_in,i_in,j_in]
                     out[r,k,i*w_out+j]=val
-    return out
 
 @cython.cdivision(True)
 @cython.wraparound(False)
@@ -62,7 +61,6 @@ def extract_kernels_backward(floating[:,:,::1] grad,
                     j_in=j*stride+w_off-padding
                     if 0<=i_in and i_in<h_in and 0<=j_in and j_in<w_in:
                         out[r,c_in,i_in,j_in]+=grad[r,k,i*w_out+j]
-    return out
 
 @cython.cdivision(True)
 @cython.wraparound(False)
