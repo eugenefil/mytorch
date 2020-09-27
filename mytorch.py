@@ -383,9 +383,91 @@ __global__ void extract_kernels_float64(
     f((grid,),(blk,),(x,N,h_in,w_in,ksize_h,ksize_w,
                       stride,padding,h_out,w_out,out))
 
-def cuda_extract_kernels_backward(x,ksize_h,ksize_w,stride,padding,
+def cuda_extract_kernels_backward(grad,ksize_h,ksize_w,stride,padding,
                                   h_out,w_out,out):
-    return
+    assert grad.flags.c_contiguous
+    raw=cp.RawModule(code=r'''
+template<typename T>
+__device__ void extract_kernels_backward(
+        const T *grad,int N,int h_in,int w_in,
+        int ksize_h,int ksize_w,int stride,int padding,
+        int h_out,int w_out,T *out) {
+    int idx=blockIdx.x*blockDim.x+threadIdx.x;
+    if (idx>=N) return;
+    int sz=h_out*w_out;
+    int c_in=idx/(h_in*w_in);
+    int i_in=idx/w_in%h_in+padding;
+    int j_in=idx%w_in+padding;
+
+    // Find output pixels which use this input pixel.
+    // (j_in-ksize_w)/stride+1 below is the shortened version of
+    // (j_in-(ksize_w-1)+(stride-1))/stride, i.e. to find the leftmost
+    // output pixel that uses this input pixel we first move left
+    // across the width of the kernel, then by "+(stride-1))/stride"
+    // (aka ceil() for ints) find the beginning of the next closest
+    // output pixel from there. Note: due to int division these
+    // versions are not exactly the same. For unused input pixels
+    // (when stride>kernel width) the leftmost output pixel index will
+    // be greater then the rightmost. Same logic applies for rows.
+    int i_beg=i_in<ksize_h ? 0 : (i_in-ksize_h)/stride+1;
+    int j_beg=j_in<ksize_w ? 0 : (j_in-ksize_w)/stride+1;
+    int i_end=min(i_in/stride+1,h_out);
+    int j_end=min(j_in/stride+1,w_out);
+
+    // Algo being used in kernel is the optimized/incomprehensible
+    // version of the following:
+    //
+    // /* start of channel */
+    // const T *pg=grad+c_in*ksize_h*ksize_w*h_out*w_out;
+    // for (int i=i_beg;i<i_end;i++) {
+    //     for (int j=j_beg;j<j_end;j++) {
+    //         /* start of receptive field inside channel */
+    //         start=i*w_out+j;
+    //         /* input pixel's offset inside receptive field,
+    //            in range [0,ksize_h*ksize_w) */
+    //         k=(i_in-i*stride)*ksize_w+(j_in-j*stride);
+    //         val+=pg[start+k*h_out*w_out];
+    //     }
+    // }
+    const T *pg=grad+((c_in*ksize_h+i_in)*ksize_w+j_in)*sz;
+    int i_mul=w_out-stride*ksize_w*sz;
+    int j_mul=1-stride*sz;
+    T val=0.;
+    for (int i=i_beg;i<i_end;i++) {
+        for (int j=j_beg;j<j_end;j++) {
+            val+=pg[i*i_mul+j*j_mul];
+        }
+    }
+    out[idx]=val;
+}
+
+// cupy only handles templated kernels starting from ver 8, so here we
+// have to define separate wrappers for each float type
+extern "C" {
+__global__ void extract_kernels_backward_float32(
+        const float *grad,int N,int h_in,int w_in,
+        int ksize_h,int ksize_w,int stride,int padding,
+        int h_out,int w_out,float *out) {
+    extract_kernels_backward<float>(grad,N,h_in,w_in,
+        ksize_h,ksize_w,stride,padding,h_out,w_out,out);
+}
+
+__global__ void extract_kernels_backward_float64(
+        const double *grad,int N,int h_in,int w_in,
+        int ksize_h,int ksize_w,int stride,int padding,
+        int h_out,int w_out,double *out) {
+    extract_kernels_backward<double>(grad,N,h_in,w_in,
+        ksize_h,ksize_w,stride,padding,h_out,w_out,out);
+}
+}
+''')
+    f=raw.get_function('extract_kernels_backward_'+grad.dtype.name)
+    n,ch_in,h_in,w_in=out.shape
+    N=n*ch_in*h_in*w_in
+    blk=512
+    grid=(N+blk-1)//blk
+    f((grid,),(blk,),(grad,N,h_in,w_in,ksize_h,ksize_w,
+                      stride,padding,h_out,w_out,out))
 
 class Conv2dFn(Fn):
     def forward(self,x,w,b,stride=1,padding=0):
@@ -691,6 +773,10 @@ class Tensor:
     def cuda(self): return self.to(device='cuda')
     def cpu(self): return self.to(device='cpu')
 
+    def new_tensor(self,v,do_grad=False):
+        return Tensor(v,dtype=self.v.dtype,device=self.device.type,
+                      do_grad=do_grad)
+
     def backward(self,*args,**kws):
         if not self.do_grad: raise TypeError("this tensor doesn't require gradients")
         backward(self,*args,**kws)
@@ -743,8 +829,10 @@ def zeros(shape,do_grad=False):
     return Tensor(np.zeros(shape),do_grad=do_grad)
 
 def zeros_like(*args,**kws): return Tensor(np.zeros_like(*args,**kws))
-def ones(shape,do_grad=False,device=None):
-    return Tensor(np.ones(shape),do_grad=do_grad,device=device)
+
+def ones(shape,dtype=None,do_grad=False,device=None):
+    return Tensor(np.ones(shape),dtype=dtype,do_grad=do_grad,device=device)
+
 def arange(*args,dtype=None,do_grad=False):
     return Tensor(np.arange(*args,dtype=dtype),do_grad=do_grad)
 

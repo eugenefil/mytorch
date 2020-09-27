@@ -5,12 +5,15 @@ import torch.nn.functional as F
 import mytorch
 
 def to_torch(*ts):
-    out=[torch.tensor(t.v,requires_grad=t.do_grad) for t in ts]
+    out=[torch.tensor(t.cpu().v,requires_grad=t.do_grad,
+                      device=t.device.type)
+         for t in ts]
     if len(out)==1: return out[0]
     return out
 
-@pytest.fixture
-def conv2d_inputs():
+@pytest.fixture(params=['cpu','cuda'])
+def conv2d_inputs(request):
+    dev=request.param
     x=mytorch.tensor([
         [[[0.,1],
           [2,3]],
@@ -22,7 +25,7 @@ def conv2d_inputs():
           [10,11]],
 
          [[12,13],
-          [14,15]]]],do_grad=True)
+          [14,15]]]],do_grad=True,device=dev)
 
     w=mytorch.tensor([
         [[[1.,1],
@@ -35,15 +38,15 @@ def conv2d_inputs():
           [2,2]],
 
          [[2,2],
-          [2,2]]]],do_grad=True)
+          [2,2]]]],do_grad=True,device=dev)
 
-    b=mytorch.tensor([0.,100],do_grad=True)
-    return x,w,b
+    b=mytorch.tensor([0.,100],do_grad=True,device=dev)
+    return x,w,b,x.new_tensor
 
 def test_conv2d(conv2d_inputs):
-    x,w,b=conv2d_inputs
+    x,w,b,ten=conv2d_inputs
     y=mytorch.conv2d(x,w,b,stride=2,padding=1)
-    assert (y==[
+    assert (y==ten([
         [[[4.,6],
           [8,10]],
 
@@ -54,12 +57,12 @@ def test_conv2d(conv2d_inputs):
           [24,26]],
 
          [[140,144],
-          [148,152]]]]).all()
+          [148,152]]]])).all()
 
     y.sum().backward()
-    assert (b.grad==[8.,8]).all()
+    assert (b.grad==ten([8.,8])).all()
 
-    assert (w.grad==[
+    assert (w.grad==ten([
         [[[14.,12],
           [10,8]],
 
@@ -70,9 +73,9 @@ def test_conv2d(conv2d_inputs):
           [10,8]],
 
          [[22,20],
-          [18,16]]]]).all()
+          [18,16]]]])).all()
 
-    assert (x.grad==[
+    assert (x.grad==ten([
         [[[3.,3],
           [3,3]],
 
@@ -83,20 +86,20 @@ def test_conv2d(conv2d_inputs):
           [3,3]],
 
          [[3,3],
-          [3,3]]]]).all()
+          [3,3]]]])).all()
 
     xt,wt,bt=to_torch(x,w,b)
     yt=F.conv2d(xt,wt,bt,stride=2,padding=1)
     assert (to_torch(y)==yt).all()
     yt.sum().backward()
-    assert (b.grad==bt.grad.numpy()).all()
-    assert (w.grad==wt.grad.numpy()).all()
-    assert (x.grad==xt.grad.numpy()).all()
+    assert (to_torch(b.grad)==bt.grad).all()
+    assert (to_torch(w.grad)==wt.grad).all()
+    assert (to_torch(x.grad)==xt.grad).all()
 
 def test_conv2d_no_bias(conv2d_inputs):
-    x,w,_=conv2d_inputs
+    x,w,_,ten=conv2d_inputs
     y=mytorch.conv2d(x,w,stride=2,padding=1)
-    assert (y==[
+    assert (y==ten([
         [[[4.,6],
           [8,10]],
 
@@ -107,11 +110,11 @@ def test_conv2d_no_bias(conv2d_inputs):
           [24,26]],
 
          [[40,44],
-          [48,52]]]]).all()
+          [48,52]]]])).all()
 
 def test_conv2d_unused_pixels_get_zero_grads(conv2d_inputs):
-    x,_,b=conv2d_inputs
-    w=mytorch.tensor([
+    x,_,b,ten=conv2d_inputs
+    w=ten([
         [[[1.]],
 
          [[1]]],
@@ -121,17 +124,17 @@ def test_conv2d_unused_pixels_get_zero_grads(conv2d_inputs):
          [[2]]]],do_grad=True)
 
     y=mytorch.conv2d(x,w,b,stride=2)
-    assert (y==[
+    assert (y==ten([
         [[[4.]],
 
          [[108]]],
 
         [[[20]],
 
-         [[140]]]]).all()
+         [[140]]]])).all()
 
     y.sum().backward()
-    assert (x.grad==[
+    assert (x.grad==ten([
         [[[3.,0],
           [0,0]],
 
@@ -142,12 +145,12 @@ def test_conv2d_unused_pixels_get_zero_grads(conv2d_inputs):
           [0,0]],
 
          [[3,0],
-          [0,0]]]]).all()
+          [0,0]]]])).all()
 
 def test_conv2d_reused_pixels_accumulate_grads(conv2d_inputs):
-    x,w,b=conv2d_inputs
+    x,w,b,ten=conv2d_inputs
     y=mytorch.conv2d(x,w,b,padding=1)
-    assert (y==[
+    assert (y==ten([
         [[[4.,10,6],
           [12,28,16],
           [8,18,10]],
@@ -162,10 +165,10 @@ def test_conv2d_reused_pixels_accumulate_grads(conv2d_inputs):
 
          [[140,184,144],
           [188,284,196],
-          [148,200,152]]]]).all()
+          [148,200,152]]]])).all()
 
     y.sum().backward()
-    assert (x.grad==[
+    assert (x.grad==ten([
         [[[12.,12],
           [12,12]],
 
@@ -176,7 +179,7 @@ def test_conv2d_reused_pixels_accumulate_grads(conv2d_inputs):
           [12,12]],
 
          [[12,12],
-          [12,12]]]]).all()
+          [12,12]]]])).all()
 
 def test_relu():
     x=mytorch.tensor([
