@@ -199,7 +199,7 @@ class SigmoidFn(Fn):
 
 class ReLUFn(Fn):
     def forward(self,x):
-        self.saved=np.maximum(x.v,0.)
+        self.saved=x.am.maximum(x.v,0.)
         return self.saved
 
     def backward(self,grad):
@@ -217,12 +217,12 @@ class LogSoftmaxFn(Fn):
         # softmax. For log-softmax the problem of softmax(z)=0 still
         # remains, so we use expanded form log(softmax(z)) =
         # z-log(sum(exp(z))), which solves that.
-        x=x.v
+        am,x=x.am,x.v
         z=x-x.max(axis=1,keepdims=True)
-        ez=np.exp(z)
+        ez=am.exp(z)
         ezsum=ez.sum(axis=1,keepdims=True)
         self.saved=(ez,ezsum)
-        return z-np.log(ezsum)
+        return z-am.log(ezsum)
 
     def backward(self,grad):
         ez,ezsum=self.saved
@@ -242,21 +242,19 @@ class MatMulFn(Fn):
         )
 
 class GetItemFn(Fn):
-    # W/ advanced indexing the key could be a tuple of tensors, in
-    # which case we'd like to make a stripped tuple of numpy arrays
-    # from it for passing to numpy. But we don't do this. To get
-    # indices from each tensor numpy creates an iter, which per our
-    # implementation (see Tensor.__iter__) is a native numpy iter. So
-    # we're fine w/out making a stripped tuple.
     def forward(self,x,key):
         self.args=(x,)
-        x=x.v
-        self.saved=(x,key)
+        am,x=x.am,x.v
+        if isinstance(key,tuple):
+            key=tuple([strip(k) for k in key])
+        else:
+            key=strip(key)
+        self.saved=(am,x.shape,x.dtype,key)
         return x[key]
 
     def backward(self,grad):
-        x,key=self.saved
-        out=np.zeros_like(x)
+        am,shape,dtype,key=self.saved
+        out=am.zeros(shape,dtype=dtype)
         out[key]=grad
         return out
 
@@ -310,7 +308,7 @@ class SinFn(Fn):
 class LinearFn(Fn):
     def forward(self,x,w,b):
         x,w=x.v,w.v
-        z=np.matmul(x,w)
+        z=x@w
         if b is not None: z+=b.v
         self.saved=(x,w)
         return z
@@ -318,8 +316,8 @@ class LinearFn(Fn):
     def backward(self,grad):
         x,w=self.saved
         return (
-            np.matmul(grad,w.T) if self.needs_grad[0] else None,
-            np.matmul(x.T,grad) if self.needs_grad[1] else None,
+            grad@w.T if self.needs_grad[0] else None,
+            x.T@grad if self.needs_grad[1] else None,
             grad.sum(axis=0,keepdims=True) if self.needs_grad[2] else None
         )
 
@@ -799,6 +797,7 @@ class Tensor:
         return self
 
     def detach(self): return Tensor(self.v)
+    def item(self): return self.v.item()
 
     @property
     def grad(self): return self._grad
@@ -825,16 +824,16 @@ def iterstrip(t):
 def empty(shape,dtype=None,do_grad=False,device=None):
     return Tensor(np.empty(shape),dtype=dtype,do_grad=do_grad,device=device)
 
-def zeros(shape,do_grad=False):
-    return Tensor(np.zeros(shape),do_grad=do_grad)
+def zeros(shape,do_grad=False,device=None):
+    return Tensor(np.zeros(shape),do_grad=do_grad,device=device)
 
 def zeros_like(*args,**kws): return Tensor(np.zeros_like(*args,**kws))
 
 def ones(shape,dtype=None,do_grad=False,device=None):
     return Tensor(np.ones(shape),dtype=dtype,do_grad=do_grad,device=device)
 
-def arange(*args,dtype=None,do_grad=False):
-    return Tensor(np.arange(*args,dtype=dtype),do_grad=do_grad)
+def arange(*args,dtype=None,do_grad=False,device=None):
+    return Tensor(np.arange(*args,dtype=dtype),do_grad=do_grad,device=device)
 
 def randn(*args,dtype=None,do_grad=False,device=None):
     return Tensor(rs.randn(*args),dtype=dtype,do_grad=do_grad,device=device)
@@ -860,7 +859,7 @@ def maxpool2d(x,ksize,stride=1,padding=0):
 
 def nll_loss(x,targ):
     n=len(x)
-    return -x[arange(n),targ].sum()/x.dtype.type(n)
+    return -x[x.am.arange(n),targ.v].sum()/x.v.dtype.type(n)
 
 def cross_entropy(x,targ): return nll_loss(log_softmax(x),targ)
 

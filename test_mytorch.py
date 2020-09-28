@@ -181,25 +181,26 @@ def test_conv2d_reused_pixels_accumulate_grads(conv2d_inputs):
          [[12,12],
           [12,12]]]])).all()
 
-def test_relu():
+@pytest.mark.parametrize('dev',['cpu','cuda'])
+def test_relu(dev):
     x=mytorch.tensor([
         [-1.,0],
-        [3,5]],do_grad=True)
+        [3,5]],do_grad=True,device=dev)
     y=mytorch.relu(x)
-    assert (y==[
+    assert (y==x.new_tensor([
         [0.,0],
-        [3,5]]).all()
+        [3,5]])).all()
 
     y.sum().backward()
-    assert (x.grad==[
+    assert (x.grad==x.new_tensor([
         [0.,0],
-        [1,1]]).all()
+        [1,1]])).all()
 
     xt=to_torch(x)
     yt=F.relu(xt)
     assert (to_torch(y)==yt).all()
     yt.sum().backward()
-    assert (x.grad==xt.grad.numpy()).all()
+    assert (to_torch(x.grad)==xt.grad).all()
 
 def near(x,y,eps): return abs(x-y)<eps
 
