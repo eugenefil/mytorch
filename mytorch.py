@@ -148,48 +148,50 @@ class RDivFn(Fn):
 
 class PowFn(Fn):
     def forward(self,x,y):
-        x,y=x.v,strip(y)
-        self.saved=(x,y)
+        am,x,y=x.am,x.v,strip(y)
+        self.saved=(am,x,y)
         return x**y
 
     def backward(self,grad):
-        x,y=self.saved
+        am,x,y=self.saved
         return (
             grad*y*x**(y-1.) if self.needs_grad[0] else None,
-            grad*x**y*np.log(x) if self.needs_grad[1] else None
+            grad*x**y*am.log(x) if self.needs_grad[1] else None
         )
 
 class RPowFn(Fn):
     def forward(self,x,y):
         self.args=(y,) # only y may be a tensor
         res=x**y.v
-        self.saved=(x,res)
+        self.saved=(y.am,x,res)
         return res
 
     def backward(self,grad):
-        x,x_pow_y=self.saved
-        return grad*x_pow_y*np.log(x)
+        am,x,x_pow_y=self.saved
+        return grad*x_pow_y*am.log(x)
 
 class ExpFn(Fn):
     def forward(self,x):
-        self.saved=np.exp(x.v)
+        self.saved=x.am.exp(x.v)
         return self.saved
+
     def backward(self,grad): return grad*self.saved
 
 class LogFn(Fn):
     def forward(self,x):
         self.saved=x.v
-        return np.log(self.saved)
+        return x.am.log(self.saved)
+
     def backward(self,grad): return grad/self.saved
 
 class SigmoidFn(Fn):
     def forward(self,x):
-        x=x.v
+        am,x=x.am,x.v
         # cast 1. to x.dtype to keep original type, otherwise numpy
         # will promote 1. (and the end result) to float64 when x is a
         # scalar
         one=x.dtype.type(1)
-        res=one/(one+np.exp(-x))
+        res=one/(one+am.exp(-x))
         self.saved=(one,res)
         return res
 
@@ -232,13 +234,13 @@ class MatMulFn(Fn):
     def forward(self,x,y):
         x,y=x.v,y.v
         self.saved=(x,y)
-        return np.matmul(x,y)
+        return x@y
 
     def backward(self,grad):
         x,y=self.saved
         return (
-            np.matmul(grad,y.T) if self.needs_grad[0] else None,
-            np.matmul(x.T,grad) if self.needs_grad[1] else None
+            grad@y.T if self.needs_grad[0] else None,
+            x.T@grad if self.needs_grad[1] else None
         )
 
 class GetItemFn(Fn):
@@ -264,6 +266,7 @@ class ReshapeFn(Fn):
         x=x.v
         self.saved=x.shape
         return x.reshape(shape)
+
     def backward(self,grad): return grad.reshape(self.saved)
 
 class SumFn(Fn):
@@ -289,15 +292,23 @@ class SumFn(Fn):
 
 class CosFn(Fn):
     def forward(self,x):
-        self.saved=x.v
-        return np.cos(self.saved)
-    def backward(self,grad): return -grad*np.sin(self.saved)
+        am,x=x.am,x.v
+        self.saved=(am,x)
+        return am.cos(x)
+
+    def backward(self,grad):
+        am,x=self.saved
+        return -grad*am.sin(x)
 
 class SinFn(Fn):
     def forward(self,x):
-        self.saved=x.v
-        return np.sin(self.saved)
-    def backward(self,grad): return grad*np.cos(self.saved)
+        am,x=x.am,x.v
+        self.saved=(am,x)
+        return am.sin(x)
+
+    def backward(self,grad):
+        am,x=self.saved
+        return grad*am.cos(x)
 
 # Here we bundle x@w+b into a single op. This saves a graph node and
 # some calculations. Backward formulas are taken from MatMulFn and
@@ -545,13 +556,12 @@ class DTypeFn(Fn):
     def forward(self,x,dtype):
         self.args=(x,)
         x=x.v
-        am=cp.get_array_module(x)
-        self.saved=(am,x.dtype)
-        return am.asarray(x,dtype=dtype)
+        self.saved=x.dtype
+        return x.astype(dtype)
 
     def backward(self,grad):
-        am,old_dtype=self.saved
-        return am.asarray(grad,dtype=old_dtype)
+        old_dtype=self.saved
+        return grad.astype(old_dtype)
 
 class CUDAFn(Fn):
     def forward(self,x,dtype=None):
@@ -561,22 +571,26 @@ class CUDAFn(Fn):
         return cp.asarray(x,dtype=dtype)
 
     def backward(self,grad):
-        dtype=self.saved
+        old_dtype=self.saved
         res=cp.asnumpy(grad)
-        if dtype is None: return res
-        return np.asarray(res,dtype=dtype)
+        if old_dtype is None: return res
+        return res.astype(old_dtype)
 
 class CPUFn(Fn):
     def forward(self,x,dtype=None):
         self.args=(x,)
         x=x.v
-        self.saved=None if dtype is None else x.dtype
         res=cp.asnumpy(x)
-        if dtype is None: return res
-        return np.asarray(res,dtype=dtype)
+        if dtype is None:
+            self.saved=None
+            return res
+        else:
+            self.saved=x.dtype
+            return res.astype(dtype)
 
     def backward(self,grad):
-        return cp.asarray(grad,dtype=self.saved)
+        old_dtype=self.saved
+        return cp.asarray(grad,dtype=old_dtype)
 
 
 class Device:
@@ -823,6 +837,10 @@ def iterstrip(t):
 
 def empty(shape,dtype=None,do_grad=False,device=None):
     return Tensor(np.empty(shape),dtype=dtype,do_grad=do_grad,device=device)
+
+def full(shape,fill_value,dtype=None,do_grad=False,device=None):
+    return Tensor(np.full(shape,fill_value),dtype=dtype,
+                  do_grad=do_grad,device=device)
 
 def zeros(shape,do_grad=False,device=None):
     return Tensor(np.zeros(shape),do_grad=do_grad,device=device)
