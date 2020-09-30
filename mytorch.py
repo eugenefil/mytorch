@@ -711,19 +711,21 @@ class Tensor:
     def abs(self): return abs(self)
 
     def mean(self,axis=None,**kws):
-        ax=axis
-        if ax is None: ax=tuple(range(self.v.ndim))
-        if not isinstance(ax,tuple): ax=(ax,)
-        n=1
-        for a in ax:
-            n*=self.v.shape[a]
+        v=self.v
+        if axis is None:
+            n=v.size
+        elif isinstance(axis,tuple):
+            n=1
+            for a in axis:
+                n*=v.shape[a]
+        else:
+            n=v.shape[axis]
         # It seems numpy converts n to float64 when dividing by it. In
         # cases where sum is reduced to a scalar this may promote the
         # (e.g. float32) result itself to float64. To keep original
         # dtype convert n to it explicitly. Done only for float
         # types. This is the same behavior as np.mean.
-        if np.issubdtype(self.v.dtype,np.floating):
-            n=self.v.dtype.type(n)
+        if np.issubdtype(v.dtype,np.floating): n=v.dtype.type(n)
         return self.sum(axis=axis,**kws)/n
 
     def var(self): return Tensor(self.v.var())
@@ -745,10 +747,11 @@ class Tensor:
     def histc(self,bins=10,min=0,max=0):
         bounds=None
         if not min==max==0: bounds=(min,max)
-        return Tensor(np.histogram(self.v,bins=bins,range=bounds)[0])
+        return Tensor(self.am.histogram(self.v,bins=bins,range=bounds)[0])
 
     def histogram(self,*args,**kws):
-        return (*map(tensor,np.histogram(self.v,*args,**kws)),)
+        hist,edges=self.am.histogram(self.v,*args,**kws)
+        return Tensor(hist),Tensor(edges)
     
     def zero_(self):
         if self.do_grad and Tensor.do_grad:
