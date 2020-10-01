@@ -593,30 +593,6 @@ class CPUFn(Fn):
         return cp.asarray(grad,dtype=old_dtype)
 
 
-class Device:
-    def __init__(self,type,index=None):
-        self.type=type
-        if type=='cuda' and index is None: index=0
-        self.index=index
-
-    def __repr__(self):
-        if self.type=='cpu':
-            return self.type
-        else:
-            return self.type+':'+str(self.index)
-
-    __str__=__repr__
-
-    def __eq__(self,other):
-        return (self.type==other.type
-                and self.index==other.index)
-
-def cuda_is_available():
-    try: cp.cuda.runtime.getDeviceCount()
-    except: return False
-    return True
-
-
 Aux=namedtuple('Aux',[
     'extract_kernels',
     'extract_kernels_backward'
@@ -630,21 +606,40 @@ aux_cuda=Aux(
     cuda_extract_kernels_backward
 )
 
+class Device:
+    def __init__(self,type):
+        self.type=type
+        if type=='cuda': self.am,self.aux=cp,aux_cuda
+        else: self.am,self.aux=np,aux_cpu
+
+    def __repr__(self): return self.type
+    __str__=__repr__
+    def __eq__(self,other): return self.type==other.type
+
+def _mkdev(device=None):
+    if device is None: return Device('cpu')
+    elif isinstance(device,str): return Device(device)
+    return device
+
+def cuda_is_available():
+    try: cp.cuda.runtime.getDeviceCount()
+    except: return False
+    return True
+
+
 class Tensor:
     do_grad=True
     
     def __init__(self,v,do_grad=False,dtype=None,device=None,fn=None):
-        am=cp.get_array_module(v)
-        if am is cp:
-            self.device=Device('cuda',v.device.id)
-        elif device=='cuda':
-            am=cp
-            self.device=Device('cuda')
-        else:
-            self.device=Device('cpu')
-        self.v=am.asarray(v,dtype=dtype)
-        self.am=am
-        self.aux=aux_cuda if am is cp else aux_cpu
+        if device is None: # imply device from storage
+            device=Device('cuda' if isinstance(v,cp.ndarray) else 'cpu')
+        elif isinstance(device,str): device=Device(device)
+        # else: device is Device object
+        self.device=device
+        self.am,self.aux=device.am,device.aux
+        # n.b. w/ v as cupy.ndarray and device='cpu', np.asarray will
+        # fail, but we'll fix it later if the need arises
+        self.v=self.am.asarray(v,dtype=dtype)
 
         self.do_grad=do_grad
         self._grad=None
@@ -789,7 +784,7 @@ class Tensor:
     def cpu(self): return self.to(device='cpu')
 
     def new_tensor(self,v,do_grad=False):
-        return Tensor(v,dtype=self.v.dtype,device=self.device.type,
+        return Tensor(v,dtype=self.v.dtype,device=self.device,
                       do_grad=do_grad)
 
     def backward(self,*args,**kws):
@@ -839,22 +834,40 @@ def iterstrip(t):
     return [strip(el) for el in t]
 
 def empty(shape,dtype=None,do_grad=False,device=None):
-    return Tensor(np.empty(shape),dtype=dtype,do_grad=do_grad,device=device)
+    dev=_mkdev(device)
+    return Tensor(dev.am.empty(shape,dtype=dtype),
+                  do_grad=do_grad,device=dev)
 
 def full(shape,fill_value,dtype=None,do_grad=False,device=None):
-    return Tensor(np.full(shape,fill_value),dtype=dtype,
-                  do_grad=do_grad,device=device)
+    dev=_mkdev(device)
+    return Tensor(dev.am.full(shape,fill_value,dtype=dtype),
+                  do_grad=do_grad,device=dev)
 
-def zeros(shape,do_grad=False,device=None):
-    return Tensor(np.zeros(shape),do_grad=do_grad,device=device)
+def zeros(shape,dtype=None,do_grad=False,device=None):
+    dev=_mkdev(device)
+    return Tensor(dev.am.zeros(shape,dtype=dtype),
+                  do_grad=do_grad,device=dev)
 
-def zeros_like(*args,**kws): return Tensor(np.zeros_like(*args,**kws))
+def zeros_like(t,dtype=None,do_grad=False,device=None):
+    if dtype is None: dtype=t.v.dtype
+    if device is None: device=t.device
+    return zeros(t.v.shape,dtype=dtype,do_grad=do_grad,device=device)
 
 def ones(shape,dtype=None,do_grad=False,device=None):
-    return Tensor(np.ones(shape),dtype=dtype,do_grad=do_grad,device=device)
+    dev=_mkdev(device)
+    return Tensor(dev.am.ones(shape,dtype=dtype),
+                  do_grad=do_grad,device=dev)
 
 def arange(*args,dtype=None,do_grad=False,device=None):
-    return Tensor(np.arange(*args,dtype=dtype),do_grad=do_grad,device=device)
+    dev=_mkdev(device)
+    return Tensor(dev.am.arange(*args,dtype=dtype),
+                  do_grad=do_grad,device=dev)
+
+def linspace(*args,dtype=None,do_grad=False,device=None,**kws):
+    dev=_mkdev(device)
+    return Tensor(dev.am.linspace(*args,**kws,dtype=dtype),
+                  do_grad=do_grad,device=dev)
+
 
 def randn(*args,dtype=None,do_grad=False,device=None):
     return Tensor(rs.randn(*args),dtype=dtype,do_grad=do_grad,device=device)
@@ -866,7 +879,6 @@ def normal(mean,std,size,do_grad=False):
     return Tensor(rs.normal(mean,std,size),do_grad=do_grad)
 
 def randperm(n): return Tensor(rs.permutation(n))
-def linspace(*args): return Tensor(np.linspace(*args))
 
 def log_softmax(x): return LogSoftmaxFn()(x)
 def linear(x,w,b=None): return LinearFn()(x,w,b)
