@@ -5,12 +5,7 @@ import cupy as cp
 
 import _mytorch
 
-rs=np.random.RandomState()
-
-float32=np.float32
-float64=np.float64
-int64=np.int64
-
+### AUTOGRAD ###
 
 class no_grad:
     def __enter__(self):
@@ -593,6 +588,8 @@ class CPUFn(Fn):
         return cp.asarray(grad,dtype=old_dtype)
 
 
+### DEVICE ###
+
 Aux=namedtuple('Aux',[
     'extract_kernels',
     'extract_kernels_backward'
@@ -626,6 +623,12 @@ def cuda_is_available():
     except: return False
     return True
 
+
+### TENSOR ###
+
+float32=np.float32
+float64=np.float64
+int64=np.int64
 
 class Tensor:
     do_grad=True
@@ -826,12 +829,16 @@ class Tensor:
     def ndim(self): return self.v.ndim
 
 
-def tensor(v,**kws): return Tensor(iterstrip(v),**kws)
+### CREATION ###
+
 def strip(t): return t.v if isinstance(t,Tensor) else t
+
 def iterstrip(t):
     try: iter(t)
     except TypeError: return strip(t)
     return [strip(el) for el in t]
+
+def tensor(v,**kws): return Tensor(iterstrip(v),**kws)
 
 def empty(shape,dtype=None,do_grad=False,device=None):
     dev=_mkdev(device)
@@ -869,9 +876,18 @@ def linspace(*args,dtype=None,do_grad=False,device=None,**kws):
                   do_grad=do_grad,device=dev)
 
 
+### RNG ###
+
+rs=np.random.RandomState()
+
+def manual_seed(seed): rs.seed(seed)
+
 def randn(*args,dtype=None,do_grad=False,device=None):
-    return Tensor(rs.randn(*args),dtype=dtype,do_grad=do_grad,device=device)
+    return Tensor(rs.randn(*args),dtype=dtype,
+                  do_grad=do_grad,device=device)
+
 def randn_like(t): return randn(*t.v.shape)
+
 def rand(*args,do_grad=False):
     return Tensor(rs.rand(*args),do_grad=do_grad)
 
@@ -879,6 +895,9 @@ def normal(mean,std,size,do_grad=False):
     return Tensor(rs.normal(mean,std,size),do_grad=do_grad)
 
 def randperm(n): return Tensor(rs.permutation(n))
+
+
+### FUNCTIONAL ###
 
 def log_softmax(x): return LogSoftmaxFn()(x)
 def linear(x,w,b=None): return LinearFn()(x,w,b)
@@ -896,8 +915,8 @@ def nll_loss(x,targ):
 
 def cross_entropy(x,targ): return nll_loss(log_softmax(x),targ)
 
-def manual_seed(seed): rs.seed(seed)
 
+### NN.INIT ###
 
 def kaiming_normal_(t):
     assert t.ndim>=2
@@ -912,6 +931,8 @@ def kaiming_normal_(t):
     t.v=rs.normal(0.,std,t.shape)
     return t
 
+
+### NN ###
 
 class Module:
     def __init__(self):
@@ -1026,6 +1047,8 @@ class MaxPool2d(Module):
         return maxpool2d(x,self.ksize,self.stride,self.padding)
 
 
+### DATA ###
+
 class TensorDataset:
     def __init__(self,*ts):
         for t in ts:
@@ -1048,6 +1071,8 @@ class DataLoader:
 
     def __len__(self): return len(self.ds)
 
+
+### OPTIM ###
 
 class SGD:
     def __init__(self,params,lr,l2_decay=0.,zero_grad=True):
