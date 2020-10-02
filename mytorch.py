@@ -878,6 +878,14 @@ def linspace(*args,dtype=None,do_grad=False,device=None,**kws):
 
 ### RNG ###
 
+# We don't use global rng funcs from cupy, since it doesn't provide
+# random.RandomState and we don't want to mess its global state from
+# inside this library. So to get a random array on gpu it's first
+# generated w/ our private numpy's RandomState and then moved to gpu
+# inside Tensor constructor by means of the device arg. It must be
+# slower than direct generation on gpu, but the upside is that we have
+# same number sequences on cpu and gpu when seeded the same.
+
 rs=np.random.RandomState()
 
 def manual_seed(seed): rs.seed(seed)
@@ -886,15 +894,22 @@ def randn(*args,dtype=None,do_grad=False,device=None):
     return Tensor(rs.randn(*args),dtype=dtype,
                   do_grad=do_grad,device=device)
 
-def randn_like(t): return randn(*t.v.shape)
+def randn_like(t,dtype=None,do_grad=False,device=None):
+    if dtype is None: dtype=t.v.dtype
+    if device is None: device=t.device
+    return randn(*t.v.shape,dtype=dtype,do_grad=do_grad,device=device)
 
-def rand(*args,do_grad=False):
-    return Tensor(rs.rand(*args),do_grad=do_grad)
+def rand(*args,dtype=None,do_grad=False,device=None):
+    return Tensor(rs.rand(*args),dtype=dtype,
+                  do_grad=do_grad,device=device)
 
-def normal(mean,std,size,do_grad=False):
-    return Tensor(rs.normal(mean,std,size),do_grad=do_grad)
+def normal(mean,std,size,dtype=None,do_grad=False,device=None):
+    return Tensor(rs.normal(mean,std,size),dtype=dtype,
+                  do_grad=do_grad,device=device)
 
-def randperm(n): return Tensor(rs.permutation(n))
+def randperm(n,dtype=None,do_grad=False,device=None):
+    return Tensor(rs.permutation(n),dtype=dtype,
+                  do_grad=do_grad,device=device)
 
 
 ### FUNCTIONAL ###
@@ -927,8 +942,8 @@ def kaiming_normal_(t):
         for n in t.shape[1:]:
             fan_in*=n
 
-    std=np.sqrt(2./fan_in)
-    t.v=rs.normal(0.,std,t.shape)
+    std=(2./fan_in)**.5
+    t.v=normal(0.,std,t.shape,dtype=t.dtype,device=t.device).v
     return t
 
 
