@@ -327,10 +327,15 @@ class LinearFn(Fn):
             grad.sum(axis=0,keepdims=True) if self.needs_grad[2] else None
         )
 
+cuda_cache={}
+
 def cuda_extract_kernels(x,ksize_h,ksize_w,stride,padding,
                          h_out,w_out,out):
     assert x.flags.c_contiguous
-    raw=cp.RawModule(code=r'''
+    fn='extract_kernels_'+x.dtype.name
+    f=cuda_cache.get(fn,None)
+    if f is None:
+        raw=cp.RawModule(code=r'''
 template<typename T>
 __device__ void extract_kernels(
         const T *x,int N,int h_in,int w_in,
@@ -379,7 +384,9 @@ __global__ void extract_kernels_float64(
 }
 }
 ''')
-    f=raw.get_function('extract_kernels_'+x.dtype.name)
+        f=raw.get_function(fn)
+        cuda_cache[fn]=f
+
     n,ch_in,h_in,w_in=x.shape
     N=n*ch_in*h_out*w_out
     blk=512
@@ -390,7 +397,10 @@ __global__ void extract_kernels_float64(
 def cuda_extract_kernels_backward(grad,ksize_h,ksize_w,stride,padding,
                                   h_out,w_out,out):
     assert grad.flags.c_contiguous
-    raw=cp.RawModule(code=r'''
+    fn='extract_kernels_backward_'+grad.dtype.name
+    f=cuda_cache.get(fn,None)
+    if f is None:
+        raw=cp.RawModule(code=r'''
 template<typename T>
 __device__ void extract_kernels_backward(
         const T *grad,int N,int h_in,int w_in,
@@ -465,7 +475,9 @@ __global__ void extract_kernels_backward_float64(
 }
 }
 ''')
-    f=raw.get_function('extract_kernels_backward_'+grad.dtype.name)
+        f=raw.get_function(fn)
+        cuda_cache[fn]=f
+
     n,ch_in,h_in,w_in=out.shape
     N=n*ch_in*h_in*w_in
     blk=512
