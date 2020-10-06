@@ -11,9 +11,10 @@ def to_torch(*ts):
     if len(out)==1: return out[0]
     return out
 
-@pytest.fixture(params=['cpu','cuda'])
+@pytest.fixture(params=[('cpu',False),('cuda',False),('cuda',True)])
 def conv2d_inputs(request):
-    dev=request.param
+    dev,cudnn_enabled=request.param
+    mytorch.cudnn_enabled=cudnn_enabled
     x=mytorch.tensor([
         [[[0.,1],
           [2,3]],

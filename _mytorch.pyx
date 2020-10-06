@@ -11,11 +11,9 @@ import numpy as np
 @cython.cdivision(True)
 @cython.wraparound(False)
 @cython.boundscheck(False)
-def extract_kernels(floating[:,:,:,::1] x,
-                    int ksize_h,int ksize_w,
-                    int stride,int padding,
-                    int h_out,int w_out,
-                    floating[:,:,::1] out):
+def im2col(floating[:,:,:,::1] x,
+           int ksize_h,int ksize_w,int stride,int padding,
+           int h_out,int w_out,floating[:,:,::1] out):
     cdef Py_ssize_t n,ch_in,h_in,w_in,c
     n,ch_in,h_in,w_in=x.shape[:4] # memoryview has 8 slots in shape
     c=ch_in*ksize_h*ksize_w
@@ -40,11 +38,9 @@ def extract_kernels(floating[:,:,:,::1] x,
 @cython.cdivision(True)
 @cython.wraparound(False)
 @cython.boundscheck(False)
-def extract_kernels_backward(floating[:,:,::1] grad,
-                             int ksize_h,int ksize_w,
-                             int stride,int padding,
-                             int h_out,int w_out,
-                             floating[:,:,:,::1] out):
+def col2im(floating[:,:,::1] grad,
+           int ksize_h,int ksize_w,int stride,int padding,
+           int h_out,int w_out,floating[:,:,:,::1] out):
     cdef Py_ssize_t n,ch_in,h_in,w_in,c
     n,ch_in,h_in,w_in=out.shape[:4] # memoryview has 8 slots in shape
     c=ch_in*ksize_h*ksize_w

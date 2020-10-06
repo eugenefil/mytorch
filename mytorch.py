@@ -5,6 +5,13 @@ import cupy as cp
 
 import _mytorch
 
+try:
+    from cupy import cudnn
+    cudnn_enabled=True
+except ImportError:
+    cudnn=None
+    cudnn_enabled=False
+
 ### AUTOGRAD ###
 
 class no_grad:
@@ -329,15 +336,14 @@ class LinearFn(Fn):
 
 cuda_cache={}
 
-def cuda_extract_kernels(x,ksize_h,ksize_w,stride,padding,
-                         h_out,w_out,out):
+def cuda_im2col(x,ksize_h,ksize_w,stride,padding,h_out,w_out,out):
     assert x.flags.c_contiguous
-    fn='extract_kernels_'+x.dtype.name
+    fn='im2col_'+x.dtype.name
     f=cuda_cache.get(fn,None)
     if f is None:
         raw=cp.RawModule(code=r'''
 template<typename T>
-__device__ void extract_kernels(
+__device__ void im2col(
         const T *x,int N,int h_in,int w_in,
         int ksize_h,int ksize_w,int stride,int padding,
         int h_out,int w_out,T *out) {
@@ -367,19 +373,19 @@ __device__ void extract_kernels(
 // cupy only handles templated kernels starting from ver 8, so here we
 // have to define separate wrappers for each float type
 extern "C" {
-__global__ void extract_kernels_float32(
+__global__ void im2col_float32(
         const float *x,int N,int h_in,int w_in,
         int ksize_h,int ksize_w,int stride,int padding,
         int h_out,int w_out,float *out) {
-    extract_kernels<float>(x,N,h_in,w_in,ksize_h,ksize_w,
+    im2col<float>(x,N,h_in,w_in,ksize_h,ksize_w,
         stride,padding,h_out,w_out,out);
 }
 
-__global__ void extract_kernels_float64(
+__global__ void im2col_float64(
         const double *x,int N,int h_in,int w_in,
         int ksize_h,int ksize_w,int stride,int padding,
         int h_out,int w_out,double *out) {
-    extract_kernels<double>(x,N,h_in,w_in,ksize_h,ksize_w,
+    im2col<double>(x,N,h_in,w_in,ksize_h,ksize_w,
         stride,padding,h_out,w_out,out);
 }
 }
@@ -394,15 +400,14 @@ __global__ void extract_kernels_float64(
     f((grid,),(blk,),(x,N,h_in,w_in,ksize_h,ksize_w,
                       stride,padding,h_out,w_out,out))
 
-def cuda_extract_kernels_backward(grad,ksize_h,ksize_w,stride,padding,
-                                  h_out,w_out,out):
+def cuda_col2im(grad,ksize_h,ksize_w,stride,padding,h_out,w_out,out):
     assert grad.flags.c_contiguous
-    fn='extract_kernels_backward_'+grad.dtype.name
+    fn='col2im_'+grad.dtype.name
     f=cuda_cache.get(fn,None)
     if f is None:
         raw=cp.RawModule(code=r'''
 template<typename T>
-__device__ void extract_kernels_backward(
+__device__ void col2im(
         const T *grad,int N,int h_in,int w_in,
         int ksize_h,int ksize_w,int stride,int padding,
         int h_out,int w_out,T *out) {
@@ -458,19 +463,19 @@ __device__ void extract_kernels_backward(
 // cupy only handles templated kernels starting from ver 8, so here we
 // have to define separate wrappers for each float type
 extern "C" {
-__global__ void extract_kernels_backward_float32(
+__global__ void col2im_float32(
         const float *grad,int N,int h_in,int w_in,
         int ksize_h,int ksize_w,int stride,int padding,
         int h_out,int w_out,float *out) {
-    extract_kernels_backward<float>(grad,N,h_in,w_in,
+    col2im<float>(grad,N,h_in,w_in,
         ksize_h,ksize_w,stride,padding,h_out,w_out,out);
 }
 
-__global__ void extract_kernels_backward_float64(
+__global__ void col2im_float64(
         const double *grad,int N,int h_in,int w_in,
         int ksize_h,int ksize_w,int stride,int padding,
         int h_out,int w_out,double *out) {
-    extract_kernels_backward<double>(grad,N,h_in,w_in,
+    col2im<double>(grad,N,h_in,w_in,
         ksize_h,ksize_w,stride,padding,h_out,w_out,out);
 }
 }
@@ -485,66 +490,104 @@ __global__ void extract_kernels_backward_float64(
     f((grid,),(blk,),(grad,N,h_in,w_in,ksize_h,ksize_w,
                       stride,padding,h_out,w_out,out))
 
+def cudnn_conv2d(dev,x,w,stride,padding,h_out,w_out):
+    n,ch_out=x.shape[0],w.shape[0]
+    y=dev.am.empty((n,ch_out,h_out,w_out),dtype=x.dtype)
+    cudnn.convolution_forward(x,w,None,y,(padding,padding),
+                              (stride,stride),(1,1),1,
+                              auto_tune=True,tensor_core='auto')
+    return y,x
+
+def generic_conv2d(dev,x,w,stride,padding,h_out,w_out):
+    n=x.shape[0]
+    ch_out,ch_in,ksize_h,ksize_w=w.shape
+    c=ch_in*ksize_h*ksize_w
+    xcol=dev.am.empty((n,c,h_out*w_out),dtype=x.dtype)
+    # (n,ch_in,h_in,w_in) -> (n,c,h_out*w_out)
+    dev.aux.im2col(x,ksize_h,ksize_w,stride,padding,h_out,w_out,xcol)
+    # bcast w (ch_out,c) -> (n,ch_out,c),
+    # (n,ch_out,c) @ (n,c,h_out*w_out) = (n,ch_out,h_out*w_out)
+    y=w.reshape((ch_out,c))@xcol
+    return y.reshape((n,ch_out,h_out,w_out)),xcol
+
+def cudnn_conv2d_bwd_x(dev,w,y_grad,stride,padding,x_grad):
+    cudnn.convolution_backward_data(w,y_grad,None,x_grad,
+                                    (padding,padding),(stride,stride),
+                                    (1,1),1,deterministic=False,
+                                     auto_tune=True,tensor_core='auto')
+
+def generic_conv2d_bwd_x(dev,w,y_grad,stride,padding,x_grad):
+    ch_out,ch_in,ksize_h,ksize_w=w.shape
+    c=ch_in*ksize_h*ksize_w
+    n,ch_out,h_out,w_out=y_grad.shape
+    w=w.reshape((ch_out,c))
+    # bcast w.T (c,ch_out) -> (n,c,ch_out),
+    # (n,c,ch_out) @ (n,ch_out,h_out*w_out) = (n,c,h_out*w_out)
+    xcol_grad=w.T@y_grad.reshape((n,ch_out,h_out*w_out))
+    # (n,c,h_out*w_out) -> (n,ch_in,h_in,w_in)
+    dev.aux.col2im(xcol_grad,ksize_h,ksize_w,stride,padding,
+                   h_out,w_out,x_grad)
+
+def cudnn_conv2d_bwd_w(dev,x,y_grad,stride,padding,w_grad):
+    cudnn.convolution_backward_filter(x,y_grad,w_grad,(padding,padding),
+                                      (stride,stride),(1,1),1,
+                                      deterministic=False,
+                                      auto_tune=True,tensor_core='auto')
+
+def generic_conv2d_bwd_w(dev,xcol,y_grad,stride,padding,w_grad):
+    n,ch_out,h_out,w_out=y_grad.shape
+    y_grad=y_grad.reshape((n,ch_out,h_out*w_out))
+    # (ch_out,ch_in,ksize_h,ksize_w) -> (ch_out,c)
+    w_grad=w_grad.reshape((ch_out,xcol.shape[1]))
+    # transpose xcol (n,c,h_out*w_out) -> (n,h_out*w_out,c),
+    # (n,ch_out,h_out*w_out) @ (n,h_out*w_out,c) = (n,ch_out,c),
+    # sum (n,ch_out,c) -> (ch_out,c)
+    (y_grad@xcol.transpose(0,2,1)).sum(axis=0,out=w_grad)
+
 class Conv2dFn(Fn):
     def forward(self,x,w,b,stride=1,padding=0):
-        assert x.device==w.device
+        dev=x.device
+        assert w.device==dev
         xv,w=x.v,w.v
         ch_out,ch_in,ksize_h,ksize_w=w.shape
-        c=ch_in*ksize_h*ksize_w
-        wc=w.reshape((ch_out,c))
-
-        n,ch_in1,h_in,w_in=xv.shape
-        assert ch_in1==ch_in # match channels between input and weights
+        n,ch_in_x,h_in,w_in=xv.shape
+        assert ch_in_x==ch_in
 
         h_out=(h_in+2*padding-ksize_h)//stride+1
         w_out=(w_in+2*padding-ksize_w)//stride+1
-        xk=x.am.empty((n,c,h_out*w_out),dtype=xv.dtype)
-        # (n,ch_in,h_in,w_in) -> (n,c,h_out*w_out)
-        x.aux.extract_kernels(xv,ksize_h,ksize_w,stride,padding,
-                              h_out,w_out,xk)
-        # bcast wc (ch_out,c) -> (n,ch_out,c),
-        # (n,ch_out,c) @ (n,c,h_out*w_out) = (n,ch_out,h_out*w_out)
-        res=wc@xk
+        # Here we don't allocate y in advance and pass it to
+        # aux.conv2d like in other aux.conv2d_* funcs. It's b/c
+        # cupy.matmul doesn't yet support `out` param. Also
+        # cudnn_conv2d returns original x as x_out for later backward,
+        # whereas generic_conv2d returns unfolded im2col'ed x.
+        y,x_out=dev.aux.conv2d(dev,xv,w,stride,padding,h_out,w_out)
 
         if b is not None:
-            assert b.device==x.device
+            assert b.device==dev
             b=b.v
             assert b.shape==(ch_out,)
-            b=b.reshape((ch_out,1))
-            # bcast b (ch_out,1) -> (n,ch_out,h_out*w_out)
-            res+=b
+            b=b.reshape((1,ch_out,1,1))
+            # bcast b (1,ch_out,1,1) -> (n,ch_out,h_out,w_out)
+            y+=b
 
-        self.saved=(xk,wc,w.shape,xv.shape,stride,padding,x.am,x.aux)
-        return res.reshape(n,ch_out,h_out,w_out)
+        self.saved=(dev,x_out,xv.shape,w,stride,padding)
+        return y
 
     def backward(self,grad):
-        xk,wc,w_shape,x_shape,stride,padding,am,aux=self.saved
-        n,ch_out,h_out,w_out=grad.shape
-        grad=grad.reshape((n,ch_out,h_out*w_out))
+        dev,x_out,x_shape,w,stride,padding=self.saved
         if self.needs_grad[0]:
-            # bcast wc.T (c,ch_out) -> (n,c,ch_out),
-            # (n,c,ch_out) @ (n,ch_out,h_out*w_out) = (n,c,h_out*w_out)
-            xk_grad=wc.T@grad
-            ksize_h,ksize_w=w_shape[2:]
-            x_grad=am.zeros(x_shape,dtype=grad.dtype)
-            # (n,c,h_out*w_out) -> (n,ch_in,h_in,w_in)
-            aux.extract_kernels_backward(xk_grad,ksize_h,ksize_w,
-                                         stride,padding,
-                                         h_out,w_out,x_grad)
+            x_grad=dev.am.zeros(x_shape,dtype=x_out.dtype)
+            dev.aux.conv2d_bwd_x(dev,w,grad,stride,padding,x_grad)
 
         if self.needs_grad[1]:
-            # transpose xk (n,c,h_out*w_out) -> (n,h_out*w_out,c),
-            # (n,ch_out,h_out*w_out) @ (n,h_out*w_out,c) = (n,ch_out,c),
-            # sum (n,ch_out,c) -> (ch_out,c)
-            wc_grad=(grad@xk.transpose(0,2,1)).sum(axis=0)
-            # (ch_out,c) -> (ch_out,ch_in,ksize_h,ksize_w)
-            w_grad=wc_grad.reshape(w_shape)
+            w_grad=dev.am.empty_like(w)
+            dev.aux.conv2d_bwd_w(dev,x_out,grad,stride,padding,w_grad)
 
         return (
             x_grad if self.needs_grad[0] else None,
             w_grad if self.needs_grad[1] else None,
-            # (n,ch_out,h_out*w_out) -> (ch_out,)
-            grad.sum(axis=(0,2)) if self.needs_grad[2] else None
+            # (n,ch_out,h_out,w_out) -> (ch_out,)
+            grad.sum(axis=(0,2,3)) if self.needs_grad[2] else None
         )
 
 class MaxPool2dFn(Fn):
@@ -603,23 +646,47 @@ class CPUFn(Fn):
 ### DEVICE ###
 
 Aux=namedtuple('Aux',[
-    'extract_kernels',
-    'extract_kernels_backward'
+    'conv2d',
+    'conv2d_bwd_x',
+    'conv2d_bwd_w',
+    'im2col',
+    'col2im'
 ])
 aux_cpu=Aux(
-    _mytorch.extract_kernels,
-    _mytorch.extract_kernels_backward
+    generic_conv2d,
+    generic_conv2d_bwd_x,
+    generic_conv2d_bwd_w,
+    _mytorch.im2col,
+    _mytorch.col2im
 )
 aux_cuda=Aux(
-    cuda_extract_kernels,
-    cuda_extract_kernels_backward
+    generic_conv2d,
+    generic_conv2d_bwd_x,
+    generic_conv2d_bwd_w,
+    cuda_im2col,
+    cuda_col2im
+)
+aux_cudnn=Aux(
+    cudnn_conv2d,
+    cudnn_conv2d_bwd_x,
+    cudnn_conv2d_bwd_w,
+    None,
+    None
 )
 
 class Device:
     def __init__(self,type):
         self.type=type
-        if type=='cuda': self.am,self.aux=cp,aux_cuda
-        else: self.am,self.aux=np,aux_cpu
+        if type=='cpu':
+            self.am,self.aux=np,aux_cpu
+        elif type=='cuda':
+            self.am=cp
+            if cudnn is not None and cudnn_enabled:
+                self.aux=aux_cudnn
+            else:
+                self.aux=aux_cuda
+        else:
+            raise ValueError('device type must be cpu or cuda')
 
     def __repr__(self): return self.type
     __str__=__repr__
