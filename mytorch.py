@@ -7,6 +7,7 @@ import _mytorch
 
 try:
     from cupy import cudnn
+    from cupy.cuda import cudnn as libcudnn
     cudnn_enabled=True
 except ImportError:
     cudnn=None
@@ -201,15 +202,31 @@ class SigmoidFn(Fn):
         one,res=self.saved
         return grad*res*(one-res)
 
+def cudnn_relu(dev,x):
+    return cudnn.activation_forward(x,libcudnn.CUDNN_ACTIVATION_RELU)
+
+def generic_relu(dev,x): return dev.am.maximum(x,0.)
+
+def cudnn_relu_bwd(dev,x,y,y_grad):
+    return cudnn.activation_backward(x,y,y_grad,
+                                     libcudnn.CUDNN_ACTIVATION_RELU)
+
+def generic_relu_bwd(dev,x,y,y_grad):
+    x_grad=y_grad.copy()
+    # this op is slow and takes all of relu time, better alternatives?
+    x_grad[y==0.]=0.
+    return x_grad
+
 class ReLUFn(Fn):
     def forward(self,x):
-        self.saved=x.am.maximum(x.v,0.)
-        return self.saved
+        dev,xv=x.device,x.v
+        y=dev.aux.relu(dev,xv)
+        self.saved=(dev,xv,y)
+        return y
 
     def backward(self,grad):
-        grad=grad.copy()
-        grad[self.saved==0.]=0.
-        return grad
+        dev,x,y=self.saved
+        return dev.aux.relu_bwd(dev,x,y,grad)
 
 class LogSoftmaxFn(Fn):
     def forward(self,x):
@@ -650,28 +667,36 @@ Aux=namedtuple('Aux',[
     'conv2d_bwd_x',
     'conv2d_bwd_w',
     'im2col',
-    'col2im'
+    'col2im',
+    'relu',
+    'relu_bwd'
 ])
 aux_cpu=Aux(
     generic_conv2d,
     generic_conv2d_bwd_x,
     generic_conv2d_bwd_w,
     _mytorch.im2col,
-    _mytorch.col2im
+    _mytorch.col2im,
+    generic_relu,
+    generic_relu_bwd
 )
 aux_cuda=Aux(
     generic_conv2d,
     generic_conv2d_bwd_x,
     generic_conv2d_bwd_w,
     cuda_im2col,
-    cuda_col2im
+    cuda_col2im,
+    generic_relu,
+    generic_relu_bwd
 )
 aux_cudnn=Aux(
     cudnn_conv2d,
     cudnn_conv2d_bwd_x,
     cudnn_conv2d_bwd_w,
     None,
-    None
+    None,
+    cudnn_relu,
+    cudnn_relu_bwd
 )
 
 class Device:
@@ -943,6 +968,11 @@ def ones(shape,dtype=None,do_grad=False,device=None):
     dev=_mkdev(device)
     return Tensor(dev.am.ones(shape,dtype=dtype),
                   do_grad=do_grad,device=dev)
+
+def ones_like(t,dtype=None,do_grad=False,device=None):
+    if dtype is None: dtype=t.v.dtype
+    if device is None: device=t.device
+    return ones(t.v.shape,dtype=dtype,do_grad=do_grad,device=device)
 
 def arange(*args,dtype=None,do_grad=False,device=None):
     dev=_mkdev(device)

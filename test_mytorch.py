@@ -182,8 +182,10 @@ def test_conv2d_reused_pixels_accumulate_grads(conv2d_inputs):
          [[12,12],
           [12,12]]]])).all()
 
-@pytest.mark.parametrize('dev',['cpu','cuda'])
-def test_relu(dev):
+@pytest.mark.parametrize('dev,cudnn_enabled',[
+    ('cpu',False),('cuda',False),('cuda',True)])
+def test_relu(dev,cudnn_enabled):
+    mytorch.cudnn_enabled=cudnn_enabled
     x=mytorch.tensor([
         [-1.,0],
         [3,5]],do_grad=True,device=dev)
