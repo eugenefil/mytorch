@@ -228,26 +228,42 @@ class ReLUFn(Fn):
         dev,x,y=self.saved
         return dev.aux.relu_bwd(dev,x,y,grad)
 
+def cudnn_log_softmax(dev,x):
+    y=cudnn.softmax_forward(x,axis=1,
+                            algorithm=libcudnn.CUDNN_SOFTMAX_LOG)
+    return y,(y,)
+
+def generic_log_softmax(dev,x):
+    # Plain softmax is unstable due to possible exp()
+    # overflow/underflow. Due to softmax(x) == softmax(x+c) identity
+    # we can replace softmax(x) w/ softmax(x-max(x)). z=x-max(x)
+    # leaves us negative values of z and one zero value which solves
+    # instabilities for softmax. For log-softmax the problem of
+    # softmax(z)=0 still remains, so we use expanded form
+    # log(softmax(z)) = z-log(sum(exp(z))), which solves that.
+    z=x-x.max(axis=1,keepdims=True)
+    ez=dev.am.exp(z)
+    ezsum=ez.sum(axis=1,keepdims=True)
+    y=z-dev.am.log(ezsum)
+    return y,(ez,ezsum)
+
+def cudnn_log_softmax_bwd(dev,y_grad,y):
+    return cudnn.softmax_backward(y,y_grad,axis=1,
+                                  algorithm=libcudnn.CUDNN_SOFTMAX_LOG)
+
+def generic_log_softmax_bwd(dev,y_grad,ez,ezsum):
+    return y_grad-ez/ezsum*y_grad.sum(axis=1,keepdims=True)
+
 class LogSoftmaxFn(Fn):
     def forward(self,x):
-        # Plain softmax is unstable due to possible exp()
-        # overflow/underflow. Due to softmax(x) == softmax(x+c)
-        # identity we can replace softmax(x) w/
-        # softmax(x-max(x)). z=x-max(x) leaves us negative values of z
-        # and one zero value which solves instabilities for
-        # softmax. For log-softmax the problem of softmax(z)=0 still
-        # remains, so we use expanded form log(softmax(z)) =
-        # z-log(sum(exp(z))), which solves that.
-        am,x=x.am,x.v
-        z=x-x.max(axis=1,keepdims=True)
-        ez=am.exp(z)
-        ezsum=ez.sum(axis=1,keepdims=True)
-        self.saved=(ez,ezsum)
-        return z-am.log(ezsum)
+        dev,x=x.device,x.v
+        y,saved=dev.aux.log_softmax(dev,x)
+        self.saved=(dev,saved)
+        return y
 
     def backward(self,grad):
-        ez,ezsum=self.saved
-        return grad-ez/ezsum*grad.sum(axis=1,keepdims=True)
+        dev,args=self.saved
+        return dev.aux.log_softmax_bwd(dev,grad,*args)
 
 class MatMulFn(Fn):
     def forward(self,x,y):
@@ -669,7 +685,9 @@ Aux=namedtuple('Aux',[
     'im2col',
     'col2im',
     'relu',
-    'relu_bwd'
+    'relu_bwd',
+    'log_softmax',
+    'log_softmax_bwd'
 ])
 aux_cpu=Aux(
     generic_conv2d,
@@ -678,7 +696,9 @@ aux_cpu=Aux(
     _mytorch.im2col,
     _mytorch.col2im,
     generic_relu,
-    generic_relu_bwd
+    generic_relu_bwd,
+    generic_log_softmax,
+    generic_log_softmax_bwd
 )
 aux_cuda=Aux(
     generic_conv2d,
@@ -687,7 +707,9 @@ aux_cuda=Aux(
     cuda_im2col,
     cuda_col2im,
     generic_relu,
-    generic_relu_bwd
+    generic_relu_bwd,
+    generic_log_softmax,
+    generic_log_softmax_bwd
 )
 aux_cudnn=Aux(
     cudnn_conv2d,
@@ -696,7 +718,9 @@ aux_cudnn=Aux(
     None,
     None,
     cudnn_relu,
-    cudnn_relu_bwd
+    cudnn_relu_bwd,
+    cudnn_log_softmax,
+    cudnn_log_softmax_bwd
 )
 
 class Device:
