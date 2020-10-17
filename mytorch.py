@@ -1,3 +1,5 @@
+# TODO check cupy templated kernels, since we migrated to v8
+
 from collections import namedtuple
 
 import numpy as np
@@ -859,6 +861,7 @@ class Tensor:
 
     def exp(self): return ExpFn()(self)
     def log(self): return LogFn()(self)
+    def log1p(self): return (self+self.v.dtype.type(1)).log()
     def sigmoid(self): return SigmoidFn()(self)
     def reshape(self,shape): return ReshapeFn()(self,shape)
     def argmax(self,**kws): return Tensor(self.v.argmax(**kws))
@@ -961,12 +964,18 @@ class Tensor:
 
 def strip(t): return t.v if isinstance(t,Tensor) else t
 
-def iterstrip(t):
-    try: iter(t)
-    except TypeError: return strip(t)
-    return [strip(el) for el in t]
-
-def tensor(v,**kws): return Tensor(iterstrip(v),**kws)
+def tensor(v,device=None,**kws):
+    if isinstance(v,(list,tuple)):
+        v=[strip(el) for el in v]
+        # If device is not specified and cupy ndarray is found in v,
+        # set device to cuda. Tensor() can't find this out itself
+        # since it does not look inside.
+        if device is None:
+            for el in v[:1]: # just test 1st elt for now
+                if isinstance(el,cp.ndarray): device='cuda'
+    else:
+        v=strip(v)
+    return Tensor(v,device=device,**kws)
 
 def empty(shape,dtype=None,do_grad=False,device=None):
     dev=_mkdev(device)
