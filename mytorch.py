@@ -1,6 +1,7 @@
 # TODO check cupy templated kernels, since we migrated to v8
 
 from collections import namedtuple
+import functools
 
 import numpy as np
 import cupy as cp
@@ -47,8 +48,19 @@ class Fn:
             if res.do_grad: res.fn=self
         return res
 
-    def get_args_grads(self,grad_in):
-        grad=self.backward(grad_in)
+    def add_backward_hook(self,hook):
+        if not hasattr(self,'bwd_hooks'): self.bwd_hooks=[]
+        self.bwd_hooks.append(hook)
+
+    def get_args_grads(self,out_grad):
+        grad=self.backward(out_grad)
+        if hasattr(self,'bwd_hooks'):
+            if isinstance(grad,tuple):
+                tg=[None if g is None else Tensor(g) for g in grad]
+            else:
+                tg=Tensor(grad)
+            for h in self.bwd_hooks:
+                h(tg,Tensor(out_grad))
         if len(self.args)==1:
             return [(self.args[0],grad)]
         else:
@@ -1094,7 +1106,7 @@ def kaiming_normal_(t):
 class Module:
     def __init__(self):
         self._modules=[]
-        self.hooks=[]
+        self.fwd_hooks,self.bwd_hooks=[],[]
         self.extra_repr=''
 
     def params(self):
@@ -1122,11 +1134,17 @@ class Module:
 
     def __call__(self,x):
         out=self.forward(x)
-        if self.hooks: [h(self,x,out) for h in self.hooks]
+        if self.fwd_hooks: [h(self,x,out) for h in self.fwd_hooks]
+        if self.bwd_hooks and out.fn:
+            for h in self.bwd_hooks:
+                out.fn.add_backward_hook(functools.partial(h,self))
         return out
 
     def add_forward_hook(self,hook):
-        self.hooks.append(hook)
+        self.fwd_hooks.append(hook)
+
+    def add_backward_hook(self,hook):
+        self.bwd_hooks.append(hook)
 
     def __getitem__(self,key): return self._modules[key]
     def __len__(self): return len(self._modules)
