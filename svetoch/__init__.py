@@ -6,7 +6,7 @@ import functools
 import numpy as np
 import cupy as cp
 
-import _mytorch
+import _svetoch
 
 try:
     from cupy import cudnn
@@ -641,13 +641,13 @@ class MaxPool2dFn(Fn):
     def forward(self,x,ksize,stride=1,padding=0):
         self.args=(x,)
         x=x.v
-        out,idxs=_mytorch.maxpool2d(x,ksize,stride,padding)
+        out,idxs=_svetoch.maxpool2d(x,ksize,stride,padding)
         self.saved=(idxs,*x.shape[2:])
         return out
 
     def backward(self,grad):
         idxs,h_in,w_in=self.saved
-        return _mytorch.maxpool2d_backward(grad,idxs,h_in,w_in)
+        return _svetoch.maxpool2d_backward(grad,idxs,h_in,w_in)
 
 class DTypeFn(Fn):
     def forward(self,x,dtype):
@@ -707,8 +707,8 @@ aux_cpu=Aux(
     generic_conv2d,
     generic_conv2d_bwd_x,
     generic_conv2d_bwd_w,
-    _mytorch.im2col,
-    _mytorch.col2im,
+    _svetoch.im2col,
+    _svetoch.col2im,
     generic_relu,
     generic_relu_bwd,
     generic_log_softmax,

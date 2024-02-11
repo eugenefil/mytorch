@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-import mytorch
+import svetoch
 
 def to_torch(*ts):
     out=[torch.tensor(t.cpu().v,requires_grad=t.do_grad,
@@ -14,8 +14,8 @@ def to_torch(*ts):
 @pytest.fixture(params=[('cpu',False),('cuda',False),('cuda',True)])
 def conv2d_inputs(request):
     dev,cudnn_enabled=request.param
-    mytorch.cudnn_enabled=cudnn_enabled
-    x=mytorch.tensor([
+    svetoch.cudnn_enabled=cudnn_enabled
+    x=svetoch.tensor([
         [[[0.,1],
           [2,3]],
 
@@ -28,7 +28,7 @@ def conv2d_inputs(request):
          [[12,13],
           [14,15]]]],do_grad=True,device=dev)
 
-    w=mytorch.tensor([
+    w=svetoch.tensor([
         [[[1.,1],
           [1,1]],
 
@@ -41,12 +41,12 @@ def conv2d_inputs(request):
          [[2,2],
           [2,2]]]],do_grad=True,device=dev)
 
-    b=mytorch.tensor([0.,100],do_grad=True,device=dev)
+    b=svetoch.tensor([0.,100],do_grad=True,device=dev)
     return x,w,b,x.new_tensor
 
 def test_conv2d(conv2d_inputs):
     x,w,b,ten=conv2d_inputs
-    y=mytorch.conv2d(x,w,b,stride=2,padding=1)
+    y=svetoch.conv2d(x,w,b,stride=2,padding=1)
     assert (y==ten([
         [[[4.,6],
           [8,10]],
@@ -99,7 +99,7 @@ def test_conv2d(conv2d_inputs):
 
 def test_conv2d_no_bias(conv2d_inputs):
     x,w,_,ten=conv2d_inputs
-    y=mytorch.conv2d(x,w,stride=2,padding=1)
+    y=svetoch.conv2d(x,w,stride=2,padding=1)
     assert (y==ten([
         [[[4.,6],
           [8,10]],
@@ -124,7 +124,7 @@ def test_conv2d_unused_pixels_get_zero_grads(conv2d_inputs):
 
          [[2]]]],do_grad=True)
 
-    y=mytorch.conv2d(x,w,b,stride=2)
+    y=svetoch.conv2d(x,w,b,stride=2)
     assert (y==ten([
         [[[4.]],
 
@@ -150,7 +150,7 @@ def test_conv2d_unused_pixels_get_zero_grads(conv2d_inputs):
 
 def test_conv2d_reused_pixels_accumulate_grads(conv2d_inputs):
     x,w,b,ten=conv2d_inputs
-    y=mytorch.conv2d(x,w,b,padding=1)
+    y=svetoch.conv2d(x,w,b,padding=1)
     assert (y==ten([
         [[[4.,10,6],
           [12,28,16],
@@ -185,11 +185,11 @@ def test_conv2d_reused_pixels_accumulate_grads(conv2d_inputs):
 @pytest.mark.parametrize('dev,cudnn_enabled',[
     ('cpu',False),('cuda',False),('cuda',True)])
 def test_relu(dev,cudnn_enabled):
-    mytorch.cudnn_enabled=cudnn_enabled
-    x=mytorch.tensor([
+    svetoch.cudnn_enabled=cudnn_enabled
+    x=svetoch.tensor([
         [-1.,0],
         [3,5]],do_grad=True,device=dev)
-    y=mytorch.relu(x)
+    y=svetoch.relu(x)
     assert (y==x.new_tensor([
         [0.,0],
         [3,5]])).all()
@@ -208,12 +208,12 @@ def test_relu(dev,cudnn_enabled):
 def near(x,y,eps): return abs(x-y)<eps
 
 def test_kaiming_normal():
-    t=mytorch.ones((50,200))
-    mytorch.kaiming_normal_(t)
+    t=svetoch.ones((50,200))
+    svetoch.kaiming_normal_(t)
     assert near(t.mean(),0.,.01)
     assert near(t.var(),.04,.001)
 
-    t=mytorch.ones((100,4,5,5))
-    mytorch.kaiming_normal_(t)
+    t=svetoch.ones((100,4,5,5))
+    svetoch.kaiming_normal_(t)
     assert near(t.mean(),0.,.01)
     assert near(t.var(),.02,.001)
