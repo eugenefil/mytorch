@@ -5,7 +5,7 @@ import functools
 
 import numpy as np
 
-import _svetoch
+from . import _svetoch
 
 try:
     import cupy as cp
