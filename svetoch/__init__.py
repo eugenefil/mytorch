@@ -4,11 +4,11 @@ from collections import namedtuple
 import functools
 
 import numpy as np
-import cupy as cp
 
 import _svetoch
 
 try:
+    import cupy as cp
     from cupy import cudnn
     from cupy.cuda import cudnn as libcudnn
     cudnn_enabled=True
