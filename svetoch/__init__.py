@@ -1,7 +1,6 @@
 import numpy
 
 import svetoch.autograd as ag
-from svetoch.autograd import Device
 
 
 float32 = numpy.float32
@@ -9,35 +8,19 @@ float64 = numpy.float64
 int64 = numpy.int64
 
 
-class no_grad:
-    def __enter__(self):
-        Tensor.do_grad = False
-
-    def __exit__(self, *args):
-        Tensor.do_grad = True
-
-    def __call__(self, func):
-        def wrapper_no_grad(*args, **kws):
-            with self:
-                return func(*args, **kws)
-        return wrapper_no_grad
-
-
 def strip(t):
     return t.array if isinstance(t, Tensor) else t
 
 
 class Tensor:
-    do_grad = True
-
     def __init__(self, data, do_grad=False, dtype=None, device=None, fn=None):
         if device is None:
-            device = Device.from_data(data) # imply device from data
+            device = ag.Device.from_data(data) # imply device from data
         elif isinstance(device, str):
-            device = Device(device)
+            device = ag.Device(device)
         # make sure device and data match (e.g. device="cpu" and
         # cupy.ndarray data do not match)
-        assert device == Device.from_data(data)
+        assert device == ag.Device.from_data(data)
         self.device = device
         self.backend, self.ops = device.backend, device.ops
         self.array = self.backend.asarray(data, dtype=dtype)
@@ -77,7 +60,7 @@ class Tensor:
         return ag.RSubFn()(other, self)
 
     def __isub__(self, other):
-        if self.do_grad and Tensor.do_grad:
+        if self.do_grad and ag.do_grad:
             raise TypeError("in-place operation is prohibited, since it may change the graph")
         # subtract directly, no need for SubFn here, since this op is
         # only allowed when gradient calculation is off
@@ -85,7 +68,7 @@ class Tensor:
         return self
 
     def __imul__(self, other):
-        if self.do_grad and Tensor.do_grad:
+        if self.do_grad and ag.do_grad:
             raise TypeError("in-place operation is prohibited, since it may change the graph")
         # multiply directly, since gradient calculation is off
         self.array *= strip(other)
@@ -235,7 +218,7 @@ class Tensor:
         return Tensor(hist), Tensor(edges)
 
     def zero_(self):
-        if self.do_grad and Tensor.do_grad:
+        if self.do_grad and ag.do_grad:
             raise TypeError("in-place operation is prohibited, since it may change the graph")
         # zero all elements, this works faster than creating new array
         # with zeros_like()
@@ -244,7 +227,7 @@ class Tensor:
 
     def to(self, dtype=None, device=None):
         old_dev, old_dt = self.device, self.array.dtype
-        new_dev = old_dev if device is None else Device(device)
+        new_dev = old_dev if device is None else ag.Device(device)
         new_dt = old_dt if dtype is None else dtype
         if new_dev == old_dev:
             if new_dt == old_dt:
@@ -254,7 +237,7 @@ class Tensor:
             fn = ag.CPUFn if new_dev.type == "cpu" else ag.CUDAFn
         return fn()(self, dtype)
 
-    @no_grad()
+    @ag.no_grad()
     def to_(self, dtype=None, device=None):
         t = self.to(dtype=dtype, device=device)
         if t is self:
@@ -345,19 +328,19 @@ def tensor(data, device=None, **kws):
 
 
 def empty(shape, dtype=None, do_grad=False, device=None):
-    dev = Device.from_device(device)
+    dev = ag.Device.from_device(device)
     return Tensor(dev.backend.empty(shape, dtype=dtype),
                   do_grad=do_grad, device=dev)
 
 
 def full(shape, fill_value, dtype=None, do_grad=False, device=None):
-    dev = Device.from_device(device)
+    dev = ag.Device.from_device(device)
     return Tensor(dev.backend.full(shape, fill_value, dtype=dtype),
                   do_grad=do_grad, device=dev)
 
 
 def zeros(shape, dtype=None, do_grad=False, device=None):
-    dev = Device.from_device(device)
+    dev = ag.Device.from_device(device)
     return Tensor(dev.backend.zeros(shape, dtype=dtype),
                   do_grad=do_grad, device=dev)
 
@@ -371,7 +354,7 @@ def zeros_like(t, dtype=None, do_grad=False, device=None):
 
 
 def ones(shape, dtype=None, do_grad=False, device=None):
-    dev = Device.from_device(device)
+    dev = ag.Device.from_device(device)
     return Tensor(dev.backend.ones(shape, dtype=dtype),
                   do_grad=do_grad, device=dev)
 
@@ -385,13 +368,13 @@ def ones_like(t, dtype=None, do_grad=False, device=None):
 
 
 def arange(*args, dtype=None, do_grad=False, device=None):
-    dev = Device.from_device(device)
+    dev = ag.Device.from_device(device)
     return Tensor(dev.backend.arange(*args, dtype=dtype),
                   do_grad=do_grad, device=dev)
 
 
 def linspace(*args, dtype=None, do_grad=False, device=None, **kws):
-    dev = Device.from_device(device)
+    dev = ag.Device.from_device(device)
     return Tensor(dev.backend.linspace(*args, **kws, dtype=dtype),
                   do_grad=do_grad, device=dev)
 

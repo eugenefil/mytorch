@@ -2,7 +2,7 @@ from collections import namedtuple
 
 import numpy
 
-from svetoch.tensor import Tensor, no_grad, strip
+import svetoch as svet
 from . import _svetoch
 
 
@@ -25,6 +25,23 @@ def cuda_is_available():
     return True
 
 
+do_grad = True
+class no_grad:
+    def __enter__(self):
+        global do_grad
+        do_grad = False
+
+    def __exit__(self, *args):
+        global do_grad
+        do_grad = True
+
+    def __call__(self, func):
+        def wrapper_no_grad(*args, **kws):
+            with self:
+                return func(*args, **kws)
+        return wrapper_no_grad
+
+
 class Fn:
     def __call__(self, *args, **kws):
         # by default, args that are treated as tensors and thus may
@@ -32,12 +49,12 @@ class Fn:
         # that by setting self.args in its forward (e.g. may add a
         # tensor arg from its keyword args)
         self.args = args
-        res = Tensor(self.forward(*args, **kws))
-        if Tensor.do_grad:
+        res = svet.Tensor(self.forward(*args, **kws))
+        if do_grad:
             if len(self.args) == 1:
                 res.do_grad = self.args[0].do_grad
             else:
-                self.needs_grad = [isinstance(a, Tensor) and a.do_grad
+                self.needs_grad = [isinstance(a, svet.Tensor) and a.do_grad
                                    for a in self.args]
                 res.do_grad = any(self.needs_grad)
             if res.do_grad:
@@ -53,11 +70,11 @@ class Fn:
         grad = self.backward(out_grad)
         if hasattr(self, "bwd_hooks"):
             if isinstance(grad, tuple):
-                tg = [None if g is None else Tensor(g) for g in grad]
+                tg = [None if g is None else svet.Tensor(g) for g in grad]
             else:
-                tg = Tensor(grad)
+                tg = svet.Tensor(grad)
             for hook in self.bwd_hooks:
-                hook(tg, Tensor(out_grad))
+                hook(tg, svet.Tensor(out_grad))
         if len(self.args) == 1:
             return [(self.args[0], grad)]
         else:
@@ -73,7 +90,7 @@ def backward(t, grad=None, create_graph=False):
     if grad is None:
         grad = t.backend.ones_like(t.array)
     else:
-        grad = t.backend.asarray(strip(grad))
+        grad = t.backend.asarray(svet.strip(grad))
     assert t.array.shape == grad.shape, "shape of gradient doesn't match tensor"
     assert t.array.dtype == grad.dtype, "dtype of gradient doesn't match tensor"
     lst = [(t, grad)] # (tensor, running gradient)
@@ -100,7 +117,7 @@ def backward(t, grad=None, create_graph=False):
         fn = t.fn
         if not fn or create_graph: # if leaf or saving grad to every node
             if t._grad is None:
-                t._grad = Tensor(tgrad)
+                t._grad = svet.Tensor(tgrad)
             else:
                 t._grad.array += tgrad
 
@@ -118,7 +135,7 @@ class NegFn(Fn):
 
 class AddFn(Fn):
     def forward(self, x, y):
-        return x.array + strip(y)
+        return x.array + svet.strip(y)
 
     def backward(self, grad):
         return grad, grad
@@ -126,7 +143,7 @@ class AddFn(Fn):
 
 class SubFn(Fn):
     def forward(self, x, y):
-        return x.array - strip(y)
+        return x.array - svet.strip(y)
 
     def backward(self, grad):
         return (
@@ -142,7 +159,7 @@ class RSubFn(SubFn):
 
 class MulFn(Fn):
     def forward(self, x, y):
-        x, y = x.array, strip(y)
+        x, y = x.array, svet.strip(y)
         self.saved = (x, y)
         return x * y
 
@@ -156,7 +173,7 @@ class MulFn(Fn):
 
 class DivFn(Fn):
     def forward(self, x, y):
-        x, y = x.array, strip(y)
+        x, y = x.array, svet.strip(y)
         self.saved = (x, y)
         return x / y
 
@@ -183,7 +200,7 @@ class RDivFn(Fn):
 
 class PowFn(Fn):
     def forward(self, x, y):
-        backend, x, y = x.backend, x.array, strip(y)
+        backend, x, y = x.backend, x.array, svet.strip(y)
         self.saved = (backend, x, y)
         return x**y
 
@@ -334,9 +351,9 @@ class GetItemFn(Fn):
         self.args = (x,)
         backend, x = x.backend, x.array
         if isinstance(key, tuple):
-            key = tuple([strip(k) for k in key])
+            key = tuple([svet.strip(k) for k in key])
         else:
-            key = strip(key)
+            key = svet.strip(key)
         self.saved = (backend, x.shape, x.dtype, key)
         return x[key]
 
