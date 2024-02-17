@@ -1,5 +1,6 @@
 import numpy
 
+import svetoch as svet
 import svetoch.tensor as ten
 from . import _svetoch
 
@@ -548,3 +549,16 @@ class CPUFn(CuPyFn):
     def backward(self, grad):
         old_dtype = self.saved
         return self.cupy.asarray(grad, dtype=old_dtype)
+
+
+svet.device.register_device("cpu", numpy, {
+    "conv2d": generic_conv2d,
+    "conv2d_bwd_x": generic_conv2d_bwd_x,
+    "conv2d_bwd_w": generic_conv2d_bwd_w,
+    "im2col": _svetoch.im2col,
+    "col2im": _svetoch.col2im,
+    "relu": generic_relu,
+    "relu_bwd": generic_relu_bwd,
+    "log_softmax": generic_log_softmax,
+    "log_softmax_bwd": generic_log_softmax_bwd,
+})
