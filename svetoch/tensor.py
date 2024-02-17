@@ -1,5 +1,6 @@
 import numpy
 
+import svetoch as svet
 import svetoch.autograd as ag
 
 
@@ -15,12 +16,12 @@ def strip(t):
 class Tensor:
     def __init__(self, data, do_grad=False, dtype=None, device=None, fn=None):
         if device is None:
-            device = ag.Device.from_data(data) # imply device from data
+            device = svet.device.from_data(data) # imply device from data
         elif isinstance(device, str):
-            device = ag.Device(device)
+            device = svet.Device(device)
         # make sure device and data match (e.g. device="cpu" and
         # cupy.ndarray data do not match)
-        assert device == ag.Device.from_data(data)
+        assert device == svet.device.from_data(data)
         self.device = device
         self.backend, self.ops = device.backend, device.ops
         self.array = self.backend.asarray(data, dtype=dtype)
@@ -227,7 +228,7 @@ class Tensor:
 
     def to(self, dtype=None, device=None):
         old_dev, old_dt = self.device, self.array.dtype
-        new_dev = old_dev if device is None else ag.Device(device)
+        new_dev = old_dev if device is None else svet.device(device)
         new_dt = old_dt if dtype is None else dtype
         if new_dev == old_dev:
             if new_dt == old_dt:
@@ -328,19 +329,19 @@ def tensor(data, device=None, **kws):
 
 
 def empty(shape, dtype=None, do_grad=False, device=None):
-    dev = ag.Device.from_device(device)
+    dev = svet.device.from_device(device)
     return Tensor(dev.backend.empty(shape, dtype=dtype),
                   do_grad=do_grad, device=dev)
 
 
 def full(shape, fill_value, dtype=None, do_grad=False, device=None):
-    dev = ag.Device.from_device(device)
+    dev = svet.device.from_device(device)
     return Tensor(dev.backend.full(shape, fill_value, dtype=dtype),
                   do_grad=do_grad, device=dev)
 
 
 def zeros(shape, dtype=None, do_grad=False, device=None):
-    dev = ag.Device.from_device(device)
+    dev = svet.device.from_device(device)
     return Tensor(dev.backend.zeros(shape, dtype=dtype),
                   do_grad=do_grad, device=dev)
 
@@ -354,7 +355,7 @@ def zeros_like(t, dtype=None, do_grad=False, device=None):
 
 
 def ones(shape, dtype=None, do_grad=False, device=None):
-    dev = ag.Device.from_device(device)
+    dev = svet.device.from_device(device)
     return Tensor(dev.backend.ones(shape, dtype=dtype),
                   do_grad=do_grad, device=dev)
 
@@ -368,13 +369,13 @@ def ones_like(t, dtype=None, do_grad=False, device=None):
 
 
 def arange(*args, dtype=None, do_grad=False, device=None):
-    dev = ag.Device.from_device(device)
+    dev = svet.device.from_device(device)
     return Tensor(dev.backend.arange(*args, dtype=dtype),
                   do_grad=do_grad, device=dev)
 
 
 def linspace(*args, dtype=None, do_grad=False, device=None, **kws):
-    dev = ag.Device.from_device(device)
+    dev = svet.device.from_device(device)
     return Tensor(dev.backend.linspace(*args, **kws, dtype=dtype),
                   do_grad=do_grad, device=dev)
 
