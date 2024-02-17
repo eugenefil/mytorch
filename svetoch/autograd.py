@@ -2,7 +2,7 @@ from collections import namedtuple
 
 import numpy
 
-import svetoch as svet
+import svetoch.tensor as ten
 from . import _svetoch
 
 
@@ -49,12 +49,12 @@ class Fn:
         # that by setting self.args in its forward (e.g. may add a
         # tensor arg from its keyword args)
         self.args = args
-        res = svet.Tensor(self.forward(*args, **kws))
+        res = ten.Tensor(self.forward(*args, **kws))
         if do_grad:
             if len(self.args) == 1:
                 res.do_grad = self.args[0].do_grad
             else:
-                self.needs_grad = [isinstance(a, svet.Tensor) and a.do_grad
+                self.needs_grad = [isinstance(a, ten.Tensor) and a.do_grad
                                    for a in self.args]
                 res.do_grad = any(self.needs_grad)
             if res.do_grad:
@@ -70,11 +70,11 @@ class Fn:
         grad = self.backward(out_grad)
         if hasattr(self, "bwd_hooks"):
             if isinstance(grad, tuple):
-                tg = [None if g is None else svet.Tensor(g) for g in grad]
+                tg = [None if g is None else ten.Tensor(g) for g in grad]
             else:
-                tg = svet.Tensor(grad)
+                tg = ten.Tensor(grad)
             for hook in self.bwd_hooks:
-                hook(tg, svet.Tensor(out_grad))
+                hook(tg, ten.Tensor(out_grad))
         if len(self.args) == 1:
             return [(self.args[0], grad)]
         else:
@@ -90,7 +90,7 @@ def backward(t, grad=None, create_graph=False):
     if grad is None:
         grad = t.backend.ones_like(t.array)
     else:
-        grad = t.backend.asarray(svet.strip(grad))
+        grad = t.backend.asarray(ten.strip(grad))
     assert t.array.shape == grad.shape, "shape of gradient doesn't match tensor"
     assert t.array.dtype == grad.dtype, "dtype of gradient doesn't match tensor"
     lst = [(t, grad)] # (tensor, running gradient)
@@ -117,7 +117,7 @@ def backward(t, grad=None, create_graph=False):
         fn = t.fn
         if not fn or create_graph: # if leaf or saving grad to every node
             if t._grad is None:
-                t._grad = svet.Tensor(tgrad)
+                t._grad = ten.Tensor(tgrad)
             else:
                 t._grad.array += tgrad
 
@@ -135,7 +135,7 @@ class NegFn(Fn):
 
 class AddFn(Fn):
     def forward(self, x, y):
-        return x.array + svet.strip(y)
+        return x.array + ten.strip(y)
 
     def backward(self, grad):
         return grad, grad
@@ -143,7 +143,7 @@ class AddFn(Fn):
 
 class SubFn(Fn):
     def forward(self, x, y):
-        return x.array - svet.strip(y)
+        return x.array - ten.strip(y)
 
     def backward(self, grad):
         return (
@@ -159,7 +159,7 @@ class RSubFn(SubFn):
 
 class MulFn(Fn):
     def forward(self, x, y):
-        x, y = x.array, svet.strip(y)
+        x, y = x.array, ten.strip(y)
         self.saved = (x, y)
         return x * y
 
@@ -173,7 +173,7 @@ class MulFn(Fn):
 
 class DivFn(Fn):
     def forward(self, x, y):
-        x, y = x.array, svet.strip(y)
+        x, y = x.array, ten.strip(y)
         self.saved = (x, y)
         return x / y
 
@@ -200,7 +200,7 @@ class RDivFn(Fn):
 
 class PowFn(Fn):
     def forward(self, x, y):
-        backend, x, y = x.backend, x.array, svet.strip(y)
+        backend, x, y = x.backend, x.array, ten.strip(y)
         self.saved = (backend, x, y)
         return x**y
 
@@ -351,9 +351,9 @@ class GetItemFn(Fn):
         self.args = (x,)
         backend, x = x.backend, x.array
         if isinstance(key, tuple):
-            key = tuple([svet.strip(k) for k in key])
+            key = tuple([ten.strip(k) for k in key])
         else:
-            key = svet.strip(key)
+            key = ten.strip(key)
         self.saved = (backend, x.shape, x.dtype, key)
         return x[key]
 

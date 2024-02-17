@@ -1,4 +1,4 @@
-import svetoch as svet
+import svetoch.tensor as ten
 
 class TensorDataset:
     def __init__(self, *tensors):
@@ -20,9 +20,9 @@ class DataLoader:
     def __iter__(self):
         n = len(self.dataset)
         if self.shuffle:
-            idxs = svet.randperm(n)
+            idxs = ten.randperm(n)
         else:
-            idxs = svet.arange(n)
+            idxs = ten.arange(n)
         for i in range(0, n, self.batch_size):
             yield self.dataset[idxs[i : i+self.batch_size].v]
 
