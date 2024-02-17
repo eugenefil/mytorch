@@ -299,7 +299,7 @@ def cudnn_log_softmax(dev, x):
 def generic_log_softmax(dev, x):
     # Plain softmax is unstable due to possible exp()
     # overflow/underflow. Due to softmax(x) == softmax(x + c) identity
-    # we can replace softmax(x) w/ softmax(x - max(x)). z = x - max(x)
+    # we can replace softmax(x) with softmax(x - max(x)). z = x - max(x)
     # leaves us negative values of z and one zero value which solves
     # instabilities for softmax. For log-softmax the problem of
     # softmax(z) = 0 still remains, so we use expanded form
@@ -419,24 +419,24 @@ class SinFn(Fn):
         return grad * backend.cos(x)
 
 
-# Here we bundle x @ w + b into a single op. This saves a graph node and
-# some calculations. Backward formulas are taken from MatMulFn and
-# AddFn. Also knowing that bias would be broadcasted in a certain way
-# avoids reducing that would otherwise be done in a general way in
+# Here we bundle x @ weight + bias into a single op. This saves a graph
+# node and some calculations. Backward formulas are taken from MatMulFn
+# and AddFn. Also knowing that bias would be broadcasted in a certain
+# way avoids reducing that would otherwise be done in a general way in
 # Tensor.backward(). Using this custom op instead of general code gave
 # 5% reduction in time.
 class LinearFn(Fn):
-    def forward(self, x, w, b):
-        x, w = x.array, w.array
-        z = x @ w
-        if b is not None: z += b.array
-        self.saved = (x, w)
+    def forward(self, x, weight, bias):
+        x, weight = x.array, weight.array
+        z = x @ weight
+        if bias is not None: z += bias.array
+        self.saved = (x, weight)
         return z
 
     def backward(self, grad):
-        x, w = self.saved
+        x, weight = self.saved
         return (
-            grad @ w.T if self.needs_grad[0] else None,
+            grad @ weight.T if self.needs_grad[0] else None,
             x.T @ grad if self.needs_grad[1] else None,
             grad.sum(axis=0, keepdims=True) if self.needs_grad[2] else None
         )
@@ -600,43 +600,43 @@ __global__ void col2im_float64(
                       stride, padding, h_out, w_out, out))
 
 
-def cudnn_conv2d(dev, x, w, stride, padding, h_out, w_out):
-    n, ch_out = x.shape[0], w.shape[0]
+def cudnn_conv2d(dev, x, weight, stride, padding, h_out, w_out):
+    n, ch_out = x.shape[0], weight.shape[0]
     y = dev.backend.empty((n, ch_out, h_out, w_out), dtype=x.dtype)
-    cudnn.convolution_forward(x, w, None, y, (padding, padding),
+    cudnn.convolution_forward(x, weight, None, y, (padding, padding),
                               (stride, stride), (1, 1), 1,
                               auto_tune=True, tensor_core='auto')
     return y, x
 
 
-def generic_conv2d(dev, x, w, stride, padding, h_out, w_out):
+def generic_conv2d(dev, x, weight, stride, padding, h_out, w_out):
     n = x.shape[0]
-    ch_out, ch_in, ksize_h, ksize_w = w.shape
+    ch_out, ch_in, ksize_h, ksize_w = weight.shape
     c = ch_in * ksize_h * ksize_w
     xcol = dev.backend.empty((n, c, h_out * w_out), dtype=x.dtype)
     # (n, ch_in, h_in, w_in) -> (n, c, h_out * w_out)
     dev.ops.im2col(x, ksize_h, ksize_w, stride, padding, h_out, w_out, xcol)
-    # bcast w (ch_out, c) -> (n, ch_out, c),
+    # bcast weight (ch_out, c) -> (n, ch_out, c),
     # (n, ch_out, c) @ (n, c, h_out * w_out) = (n, ch_out, h_out * w_out)
-    y = w.reshape((ch_out, c)) @ xcol
+    y = weight.reshape((ch_out, c)) @ xcol
     return y.reshape((n, ch_out, h_out, w_out)), xcol
 
 
-def cudnn_conv2d_bwd_x(dev, w, y_grad, stride, padding, x_grad):
-    cudnn.convolution_backward_data(w, y_grad, None, x_grad,
+def cudnn_conv2d_bwd_x(dev, weight, y_grad, stride, padding, x_grad):
+    cudnn.convolution_backward_data(weight, y_grad, None, x_grad,
                                     (padding, padding), (stride, stride),
                                     (1, 1), 1, deterministic=False,
                                      auto_tune=True, tensor_core='auto')
 
 
-def generic_conv2d_bwd_x(dev, w, y_grad, stride, padding, x_grad):
-    ch_out, ch_in, ksize_h, ksize_w = w.shape
+def generic_conv2d_bwd_x(dev, weight, y_grad, stride, padding, x_grad):
+    ch_out, ch_in, ksize_h, ksize_w = weight.shape
     c = ch_in * ksize_h * ksize_w
     n, ch_out, h_out, w_out = y_grad.shape
-    w = w.reshape((ch_out, c))
-    # bcast w.T (c, ch_out) -> (n, c, ch_out),
+    weight = weight.reshape((ch_out, c))
+    # bcast weight.T (c, ch_out) -> (n, c, ch_out),
     # (n, c, ch_out) @ (n, ch_out, h_out * w_out) = (n, c, h_out * w_out)
-    xcol_grad = w.T @ y_grad.reshape((n, ch_out, h_out * w_out))
+    xcol_grad = weight.T @ y_grad.reshape((n, ch_out, h_out * w_out))
     # (n, c, h_out * w_out) -> (n, ch_in, h_in, w_in)
     dev.ops.col2im(xcol_grad, ksize_h, ksize_w, stride, padding,
                    h_out, w_out, x_grad)
@@ -661,11 +661,11 @@ def generic_conv2d_bwd_w(dev, xcol, y_grad, stride, padding, w_grad):
 
 
 class Conv2dFn(Fn):
-    def forward(self, x, w, b, stride=1, padding=0):
+    def forward(self, x, weight, bias, stride=1, padding=0):
         dev = x.device
-        assert w.device == dev
-        xv, w = x.array, w.array
-        ch_out, ch_in, ksize_h, ksize_w = w.shape
+        assert weight.device == dev
+        xv, weight = x.array, weight.array
+        ch_out, ch_in, ksize_h, ksize_w = weight.shape
         n, ch_in_x, h_in, w_in = xv.shape
         assert ch_in_x == ch_in
 
@@ -676,27 +676,27 @@ class Conv2dFn(Fn):
         # cupy.matmul doesn't yet support `out` param. Also
         # cudnn_conv2d returns original x as x_out for later backward,
         # whereas generic_conv2d returns unfolded im2col'ed x.
-        y, x_out = dev.ops.conv2d(dev, xv, w, stride, padding, h_out, w_out)
+        y, x_out = dev.ops.conv2d(dev, xv, weight, stride, padding, h_out, w_out)
 
-        if b is not None:
-            assert b.device == dev
-            b = b.array
-            assert b.shape == (ch_out,)
-            b = b.reshape((1, ch_out, 1, 1))
-            # bcast b (1, ch_out, 1, 1) -> (n, ch_out, h_out, w_out)
-            y += b
+        if bias is not None:
+            assert bias.device == dev
+            bias = bias.array
+            assert bias.shape == (ch_out,)
+            bias = bias.reshape((1, ch_out, 1, 1))
+            # bcast bias (1, ch_out, 1, 1) -> (n, ch_out, h_out, w_out)
+            y += bias
 
-        self.saved = (dev, x_out, xv.shape, w, stride, padding)
+        self.saved = (dev, x_out, xv.shape, weight, stride, padding)
         return y
 
     def backward(self, grad):
-        dev, x_out, x_shape, w, stride, padding = self.saved
+        dev, x_out, x_shape, weight, stride, padding = self.saved
         if self.needs_grad[0]:
             x_grad = dev.backend.zeros(x_shape, dtype=x_out.dtype)
-            dev.ops.conv2d_bwd_x(dev, w, grad, stride, padding, x_grad)
+            dev.ops.conv2d_bwd_x(dev, weight, grad, stride, padding, x_grad)
 
         if self.needs_grad[1]:
-            w_grad = dev.backend.empty_like(w)
+            w_grad = dev.backend.empty_like(weight)
             dev.ops.conv2d_bwd_w(dev, x_out, grad, stride, padding, w_grad)
 
         return (

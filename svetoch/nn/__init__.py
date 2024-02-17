@@ -113,7 +113,7 @@ class LogSoftmax(Module):
         return F.log_softmax(x)
 
 
-class Seq(Module):
+class Sequential(Module):
     def __init__(self, *modules):
         super().__init__()
         self._modules = list(modules)
@@ -135,7 +135,7 @@ class Conv2d(Module):
             ch_in, ch_out, ksize, stride, padding)
 
     def forward(self, x):
-        return F.conv2d(x, self.w, self.b, stride=self.stride,
+        return F.conv2d(x, self.weight, self.bias, stride=self.stride,
                       padding=self.padding)
 
 
