@@ -2,7 +2,7 @@ import numpy
 
 import svetoch as svet
 import svetoch.tensor as ten
-from . import _svetoch
+from . import _cython_ops
 
 
 do_grad = True
@@ -490,13 +490,13 @@ class MaxPool2dFn(Fn):
     def forward(self, x, ksize, stride=1, padding=0):
         self.args = (x,)
         x = x.array
-        out, idxs = _svetoch.maxpool2d(x, ksize, stride, padding)
+        out, idxs = _cython_ops.maxpool2d(x, ksize, stride, padding)
         self.saved = (idxs, *x.shape[2:])
         return out
 
     def backward(self, grad):
         idxs, h_in, w_in = self.saved
-        return _svetoch.maxpool2d_backward(grad, idxs, h_in, w_in)
+        return _cython_ops.maxpool2d_backward(grad, idxs, h_in, w_in)
 
 
 class DTypeFn(Fn):
@@ -555,8 +555,8 @@ svet.device.register_device("cpu", numpy, {
     "conv2d": generic_conv2d,
     "conv2d_bwd_x": generic_conv2d_bwd_x,
     "conv2d_bwd_w": generic_conv2d_bwd_w,
-    "im2col": _svetoch.im2col,
-    "col2im": _svetoch.col2im,
+    "im2col": _cython_ops.im2col,
+    "col2im": _cython_ops.col2im,
     "relu": generic_relu,
     "relu_bwd": generic_relu_bwd,
     "log_softmax": generic_log_softmax,
