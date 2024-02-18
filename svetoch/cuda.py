@@ -227,17 +227,17 @@ def probe_data(data):
 
 if cupy is not None:
     if cudnn is not None and cudnn_enabled:
-        svetoch.device.register_device('cuda', cupy, {
-            "conv2d": cudnn_conv2d,
-            "conv2d_bwd_x": cudnn_conv2d_bwd_x,
-            "conv2d_bwd_w": cudnn_conv2d_bwd_w,
-            "relu": cudnn_relu,
-            "relu_bwd": cudnn_relu_bwd,
-            "log_softmax": cudnn_log_softmax,
-            "log_softmax_bwd": cudnn_log_softmax_bwd,
-        }, probe_data=probe_data)
+        svetoch.device.register_device('cuda', cupy, dict(
+            conv2d=cudnn_conv2d,
+            conv2d_bwd_x=cudnn_conv2d_bwd_x,
+            conv2d_bwd_w=cudnn_conv2d_bwd_w,
+            relu=cudnn_relu,
+            relu_bwd=cudnn_relu_bwd,
+            log_softmax=cudnn_log_softmax,
+            log_softmax_bwd=cudnn_log_softmax_bwd,
+        ), probe_data=probe_data)
     else:
-        svetoch.device.register_ops('cuda', cupy, {
-            "im2col": cuda_im2col,
-            "col2im": cuda_col2im,
-        })
+        svetoch.device.register_ops('cuda', cupy, dict(
+            im2col=cuda_im2col,
+            col2im=cuda_col2im,
+        ))

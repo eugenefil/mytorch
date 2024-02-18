@@ -551,14 +551,14 @@ class CPUFn(CuPyFn):
         return self.cupy.asarray(grad, dtype=old_dtype)
 
 
-svetoch.device.register_device("cpu", numpy, {
-    "conv2d": generic_conv2d,
-    "conv2d_bwd_x": generic_conv2d_bwd_x,
-    "conv2d_bwd_w": generic_conv2d_bwd_w,
-    "im2col": _cython_ops.im2col,
-    "col2im": _cython_ops.col2im,
-    "relu": generic_relu,
-    "relu_bwd": generic_relu_bwd,
-    "log_softmax": generic_log_softmax,
-    "log_softmax_bwd": generic_log_softmax_bwd,
-})
+svetoch.device.register_device("cpu", numpy, dict(
+    conv2d=generic_conv2d,
+    conv2d_bwd_x=generic_conv2d_bwd_x,
+    conv2d_bwd_w=generic_conv2d_bwd_w,
+    im2col=_cython_ops.im2col,
+    col2im=_cython_ops.col2im,
+    relu=generic_relu,
+    relu_bwd=generic_relu_bwd,
+    log_softmax=generic_log_softmax,
+    log_softmax_bwd=generic_log_softmax_bwd,
+))
