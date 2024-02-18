@@ -19,9 +19,9 @@ class Module:
                     p.append(m.bias)
         return p
 
-    def do_grad_(self, do_grad=True):
+    def requires_grad_(self, requires_grad=True):
         for p in self.parameters():
-            p.do_grad_(do_grad)
+            p.requires_grad_(requires_grad)
         return self
 
     def to(self, dtype=None, device=None):
@@ -83,10 +83,10 @@ class Linear(Module):
     def __init__(self, n_in, n_out, bias=True):
         super().__init__()
         self.weight = init.kaiming_normal_(ten.empty((n_in, n_out),
-            do_grad=True))
+            requires_grad=True))
         self.bias = None
         if bias:
-            self.bias = ten.zeros((1, n_out), do_grad=True)
+            self.bias = ten.zeros((1, n_out), requires_grad=True)
         self.extra_repr = "n_in=%d, n_out=%d, bias=%s" % (n_in, n_out, bias)
 
     def forward(self, x):
@@ -130,8 +130,8 @@ class Conv2d(Module):
         super().__init__()
         self.stride, self.padding = stride, padding
         self.weight = init.kaiming_normal_(
-            ten.empty((ch_out, ch_in, ksize, ksize), do_grad=True))
-        self.bias = ten.zeros(ch_out, do_grad=True)
+            ten.empty((ch_out, ch_in, ksize, ksize), requires_grad=True))
+        self.bias = ten.zeros(ch_out, requires_grad=True)
         self.extra_repr = 'ch_in=%d, ch_out=%d, ksize=%d, stride=%d, padding=%d' % (
             ch_in, ch_out, ksize, stride, padding)
 

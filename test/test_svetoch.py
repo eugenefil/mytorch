@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import svetoch
 
 def to_torch(*ts):
-    out=[torch.tensor(t.cpu().v,requires_grad=t.do_grad,
+    out=[torch.tensor(t.cpu().v,requires_grad=t.requires_grad,
                       device=t.device.type)
          for t in ts]
     if len(out)==1: return out[0]
@@ -26,7 +26,7 @@ def conv2d_inputs(request):
           [10,11]],
 
          [[12,13],
-          [14,15]]]],do_grad=True,device=dev)
+          [14,15]]]],requires_grad=True,device=dev)
 
     w=svetoch.tensor([
         [[[1.,1],
@@ -39,9 +39,9 @@ def conv2d_inputs(request):
           [2,2]],
 
          [[2,2],
-          [2,2]]]],do_grad=True,device=dev)
+          [2,2]]]],requires_grad=True,device=dev)
 
-    b=svetoch.tensor([0.,100],do_grad=True,device=dev)
+    b=svetoch.tensor([0.,100],requires_grad=True,device=dev)
     return x,w,b,x.new_tensor
 
 def test_conv2d(conv2d_inputs):
@@ -122,7 +122,7 @@ def test_conv2d_unused_pixels_get_zero_grads(conv2d_inputs):
 
         [[[2]],
 
-         [[2]]]],do_grad=True)
+         [[2]]]],requires_grad=True)
 
     y=svetoch.conv2d(x,w,b,stride=2)
     assert (y==ten([
@@ -188,7 +188,7 @@ def test_relu(dev,cudnn_enabled):
     svetoch.cudnn_enabled=cudnn_enabled
     x=svetoch.tensor([
         [-1.,0],
-        [3,5]],do_grad=True,device=dev)
+        [3,5]],requires_grad=True,device=dev)
     y=svetoch.relu(x)
     assert (y==x.new_tensor([
         [0.,0],

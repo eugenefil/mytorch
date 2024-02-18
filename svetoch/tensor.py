@@ -14,7 +14,8 @@ def strip(t):
 
 
 class Tensor:
-    def __init__(self, data, do_grad=False, dtype=None, device=None, fn=None):
+    def __init__(self, data, requires_grad=False, dtype=None, device=None,
+            fn=None):
         if device is None:
             device = svetoch.device.from_data(data) # imply device from data
         else:
@@ -26,7 +27,7 @@ class Tensor:
         self.backend, self.ops = device.backend, device.ops
         self.array = self.backend.asarray(data, dtype=dtype)
 
-        self.do_grad = do_grad
+        self.requires_grad = requires_grad
         self._grad = None
         self.fn = fn
 
@@ -61,7 +62,7 @@ class Tensor:
         return ag.RSubFn()(other, self)
 
     def __isub__(self, other):
-        if self.do_grad and ag.do_grad:
+        if self.requires_grad and ag.do_grad:
             raise TypeError("in-place operation is prohibited, since it may change the graph")
         # subtract directly, no need for SubFn here, since this op is
         # only allowed when gradient calculation is off
@@ -69,7 +70,7 @@ class Tensor:
         return self
 
     def __imul__(self, other):
-        if self.do_grad and ag.do_grad:
+        if self.requires_grad and ag.do_grad:
             raise TypeError("in-place operation is prohibited, since it may change the graph")
         # multiply directly, since gradient calculation is off
         self.array *= strip(other)
@@ -116,8 +117,8 @@ class Tensor:
             r = r[:-1] + f", device='{self.device}')"
         if self.fn:
             r = r[:-1] + f", fn=<{self.fn.__class__.__name__}>)"
-        elif self.do_grad:
-            r = r[:-1] + ", do_grad=True)"
+        elif self.requires_grad:
+            r = r[:-1] + ", requires_grad=True)"
         return r
     
     def __getitem__(self, key):
@@ -219,7 +220,7 @@ class Tensor:
         return Tensor(hist), Tensor(edges)
 
     def zero_(self):
-        if self.do_grad and ag.do_grad:
+        if self.requires_grad and ag.do_grad:
             raise TypeError("in-place operation is prohibited, since it may change the graph")
         # zero all elements, this works faster than creating new array
         # with zeros_like()
@@ -263,29 +264,30 @@ class Tensor:
         return self.to(device="cpu")
 
 
-    def new_tensor(self, array, do_grad=False):
+    def new_tensor(self, array, requires_grad=False):
         return Tensor(array, dtype=self.array.dtype, device=self.device,
-                      do_grad=do_grad)
+                      requires_grad=requires_grad)
 
     def backward(self, *args, **kws):
-        if not self.do_grad:
+        if not self.requires_grad:
             raise TypeError("this tensor doesn't require gradients")
         backward(self, *args, **kws)
 
-    def do_grad_(self, do_grad=True):
-        self.do_grad = do_grad
+    def requires_grad_(self, requires_grad=True):
+        self.requires_grad = requires_grad
         return self
 
     # note, in torch this op is recorded in the graph, so grads coming
     # to cloned tensor also come to original one
     def clone(self):
-        t = Tensor(self.array.copy(), do_grad=self.do_grad, fn=self.fn)
+        t = Tensor(self.array.copy(), requires_grad=self.requires_grad,
+            fn=self.fn)
         if self._grad is not None:
             t._grad = Tensor(self._grad.array.copy())
         return t
 
     def detach_(self):
-        self.do_grad = False
+        self.requires_grad = False
         self._grad = None
         self.fn = None
         return self
@@ -330,56 +332,58 @@ def tensor(data, device=None, **kws):
     return Tensor(data, device=device, **kws)
 
 
-def empty(shape, dtype=None, do_grad=False, device=None):
+def empty(shape, dtype=None, requires_grad=False, device=None):
     dev = svetoch.device.from_device(device)
     return Tensor(dev.backend.empty(shape, dtype=dtype),
-                  do_grad=do_grad, device=dev)
+                  requires_grad=requires_grad, device=dev)
 
 
-def full(shape, fill_value, dtype=None, do_grad=False, device=None):
+def full(shape, fill_value, dtype=None, requires_grad=False, device=None):
     dev = svetoch.device.from_device(device)
     return Tensor(dev.backend.full(shape, fill_value, dtype=dtype),
-                  do_grad=do_grad, device=dev)
+                  requires_grad=requires_grad, device=dev)
 
 
-def zeros(shape, dtype=None, do_grad=False, device=None):
+def zeros(shape, dtype=None, requires_grad=False, device=None):
     dev = svetoch.device.from_device(device)
     return Tensor(dev.backend.zeros(shape, dtype=dtype),
-                  do_grad=do_grad, device=dev)
+                  requires_grad=requires_grad, device=dev)
 
 
-def zeros_like(t, dtype=None, do_grad=False, device=None):
+def zeros_like(t, dtype=None, requires_grad=False, device=None):
     if dtype is None:
         dtype = t.array.dtype
     if device is None:
         device = t.device
-    return zeros(t.array.shape, dtype=dtype, do_grad=do_grad, device=device)
+    return zeros(t.array.shape, dtype=dtype, requires_grad=requires_grad,
+        device=device)
 
 
-def ones(shape, dtype=None, do_grad=False, device=None):
+def ones(shape, dtype=None, requires_grad=False, device=None):
     dev = svetoch.device.from_device(device)
     return Tensor(dev.backend.ones(shape, dtype=dtype),
-                  do_grad=do_grad, device=dev)
+                  requires_grad=requires_grad, device=dev)
 
 
-def ones_like(t, dtype=None, do_grad=False, device=None):
+def ones_like(t, dtype=None, requires_grad=False, device=None):
     if dtype is None:
         dtype = t.array.dtype
     if device is None:
         device = t.device
-    return ones(t.array.shape, dtype=dtype, do_grad=do_grad, device=device)
+    return ones(t.array.shape, dtype=dtype, requires_grad=requires_grad,
+        device=device)
 
 
-def arange(*args, dtype=None, do_grad=False, device=None):
+def arange(*args, dtype=None, requires_grad=False, device=None):
     dev = svetoch.device.from_device(device)
     return Tensor(dev.backend.arange(*args, dtype=dtype),
-                  do_grad=do_grad, device=dev)
+                  requires_grad=requires_grad, device=dev)
 
 
-def linspace(*args, dtype=None, do_grad=False, device=None, **kws):
+def linspace(*args, dtype=None, requires_grad=False, device=None, **kws):
     dev = svetoch.device.from_device(device)
     return Tensor(dev.backend.linspace(*args, **kws, dtype=dtype),
-                  do_grad=do_grad, device=dev)
+                  requires_grad=requires_grad, device=dev)
 
 
 # We don't use global rng funcs from cupy, since it doesn't provide
@@ -395,25 +399,26 @@ rndstate = numpy.random.RandomState()
 def manual_seed(seed):
     rndstate.seed(seed)
 
-def randn(*args, dtype=None, do_grad=False, device=None):
+def randn(*args, dtype=None, requires_grad=False, device=None):
     return Tensor(rndstate.randn(*args), dtype=dtype,
-                  do_grad=do_grad, device=device)
+                  requires_grad=requires_grad, device=device)
 
-def randn_like(t, dtype=None, do_grad=False, device=None):
+def randn_like(t, dtype=None, requires_grad=False, device=None):
     if dtype is None:
         dtype = t.array.dtype
     if device is None:
         device = t.device
-    return randn(*t.array.shape, dtype=dtype, do_grad=do_grad, device=device)
+    return randn(*t.array.shape, dtype=dtype, requires_grad=requires_grad,
+        device=device)
 
-def rand(*args, dtype=None, do_grad=False, device=None):
+def rand(*args, dtype=None, requires_grad=False, device=None):
     return Tensor(rndstate.rand(*args), dtype=dtype,
-                  do_grad=do_grad, device=device)
+                  requires_grad=requires_grad, device=device)
 
-def normal(mean, std, size, dtype=None, do_grad=False, device=None):
+def normal(mean, std, size, dtype=None, requires_grad=False, device=None):
     return Tensor(rndstate.normal(mean, std, size), dtype=dtype,
-                  do_grad=do_grad, device=device)
+                  requires_grad=requires_grad, device=device)
 
-def randperm(n, dtype=None, do_grad=False, device=None):
+def randperm(n, dtype=None, requires_grad=False, device=None):
     return Tensor(rndstate.permutation(n), dtype=dtype,
-                  do_grad=do_grad, device=device)
+                  requires_grad=requires_grad, device=device)

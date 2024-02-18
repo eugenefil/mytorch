@@ -32,12 +32,14 @@ class Fn:
         res = ten.Tensor(self.forward(*args, **kws))
         if do_grad:
             if len(self.args) == 1:
-                res.do_grad = self.args[0].do_grad
+                res.requires_grad = self.args[0].requires_grad
             else:
-                self.needs_grad = [isinstance(a, ten.Tensor) and a.do_grad
-                                   for a in self.args]
-                res.do_grad = any(self.needs_grad)
-            if res.do_grad:
+                self.needs_grad = [
+                    isinstance(a, ten.Tensor) and a.requires_grad
+                    for a in self.args
+                ]
+                res.requires_grad = any(self.needs_grad)
+            if res.requires_grad:
                 res.fn = self
         return res
 
