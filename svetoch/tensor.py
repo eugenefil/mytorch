@@ -238,18 +238,18 @@ class Tensor:
             fn = ag.CPUFn if new_dev.type == "cpu" else ag.CUDAFn
         return fn()(self, dtype)
 
-    @ag.no_grad()
     def to_(self, dtype=None, device=None):
-        t = self.to(dtype=dtype, device=device)
-        if t is self:
+        with ag.no_grad():
+            t = self.to(dtype=dtype, device=device)
+            if t is self:
+                return self
+            self.array = t.array
+            self.device = t.device
+            self.backend = t.backend
+            self.ops = t.ops
+            if self._grad is not None:
+                self._grad.to_(dtype=dtype, device=device)
             return self
-        self.array = t.array
-        self.device = t.device
-        self.backend = t.backend
-        self.ops = t.ops
-        if self._grad is not None:
-            self._grad.to_(dtype=dtype, device=device)
-        return self
 
     def float(self):
         return self.to(dtype=float32)
