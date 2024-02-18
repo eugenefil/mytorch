@@ -1,5 +1,9 @@
+from collections import namedtuple
+
 
 devices = {}
+Ops = None
+
 
 class Device:
     def __init__(self, type):
@@ -37,10 +41,13 @@ def from_device(device):
 
 
 def register_device(type, backend, ops, probe_data=None):
-    if type != "cpu":
-        # fill empty op slots with those from cpu ops
-        for slot, op in devices["cpu"]["ops"].items():
-            ops.setdefault(slot, op)
+    if type == "cpu":
+        # cpu ops provide the full reference list of ops and also default
+        # values for those ops, so cpu device must registered first
+        global Ops
+        # namedtuple provides dot access to its fields and default values
+        Ops = namedtuple("Ops", ops.keys(), defaults=ops.values())
+    ops = Ops(**ops) # missing slots are filled with defaults (i.e. cpu ops)
 
     devices[type] = {
         "backend": backend,
