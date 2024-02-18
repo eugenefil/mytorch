@@ -27,11 +27,12 @@ def from_data(data):
     return Device("cpu")
 
 
-def from_device(device=None):
+def from_device(device):
     if device is None:
         return Device("cpu")
     elif isinstance(device, str):
         return Device(device)
+    assert isinstance(device, Device)
     return device
 
 

@@ -1,6 +1,6 @@
 import numpy
 
-import svetoch as svet
+import svetoch.device
 import svetoch.tensor as ten
 from . import _cython_ops
 
@@ -551,7 +551,7 @@ class CPUFn(CuPyFn):
         return self.cupy.asarray(grad, dtype=old_dtype)
 
 
-svet.device.register_device("cpu", numpy, {
+svetoch.device.register_device("cpu", numpy, {
     "conv2d": generic_conv2d,
     "conv2d_bwd_x": generic_conv2d_bwd_x,
     "conv2d_bwd_w": generic_conv2d_bwd_w,

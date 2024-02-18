@@ -1,4 +1,4 @@
-import svetoch as svet
+import svetoch.device
 
 
 try:
@@ -227,7 +227,7 @@ def probe_data(data):
 
 if cupy is not None:
     if cudnn is not None and cudnn_enabled:
-        svet.device.register_device('cuda', cupy, {
+        svetoch.device.register_device('cuda', cupy, {
             "conv2d": cudnn_conv2d,
             "conv2d_bwd_x": cudnn_conv2d_bwd_x,
             "conv2d_bwd_w": cudnn_conv2d_bwd_w,
@@ -237,7 +237,7 @@ if cupy is not None:
             "log_softmax_bwd": cudnn_log_softmax_bwd,
         }, probe_data=probe_data)
     else:
-        svet.device.register_ops('cuda', cupy, {
+        svetoch.device.register_ops('cuda', cupy, {
             "im2col": cuda_im2col,
             "col2im": cuda_col2im,
         })
