@@ -409,10 +409,12 @@ def generic_conv2d(dev, x, weight, stride, padding, h_out, w_out):
     ch_out, ch_in, ksize_h, ksize_w = weight.shape
     c = ch_in * ksize_h * ksize_w
     xcol = dev.backend.empty((n, c, h_out * w_out), dtype=x.dtype)
-    # (n, ch_in, h_in, w_in) -> (n, c, h_out * w_out)
+    # for each output pixel extract input pixels used in its kernel
+    # application into a separate column:
+    # x (n, ch_in, h_in, w_in) -> xcol (n, c, h_out * w_out)
     dev.ops.im2col(x, ksize_h, ksize_w, stride, padding, h_out, w_out, xcol)
-    # bcast weight (ch_out, c) -> (n, ch_out, c),
-    # (n, ch_out, c) @ (n, c, h_out * w_out) = (n, ch_out, h_out * w_out)
+    # reshape, then broadcast weight (ch_out, c) -> (n, ch_out, c), then
+    # weight (n, ch_out, c) @ xcol (n, c, h_out * w_out) = y (n, ch_out, h_out * w_out)
     y = weight.reshape((ch_out, c)) @ xcol
     return y.reshape((n, ch_out, h_out, w_out)), xcol
 
@@ -422,7 +424,7 @@ def generic_conv2d_bwd_x(dev, weight, y_grad, stride, padding, x_grad):
     c = ch_in * ksize_h * ksize_w
     n, ch_out, h_out, w_out = y_grad.shape
     weight = weight.reshape((ch_out, c))
-    # bcast weight.T (c, ch_out) -> (n, c, ch_out),
+    # broadcast weight.T (c, ch_out) -> (n, c, ch_out),
     # (n, c, ch_out) @ (n, ch_out, h_out * w_out) = (n, c, h_out * w_out)
     xcol_grad = weight.T @ y_grad.reshape((n, ch_out, h_out * w_out))
     # (n, c, h_out * w_out) -> (n, ch_in, h_in, w_in)
@@ -514,7 +516,7 @@ class Conv2dFn(Fn):
             bias = bias.array
             assert bias.shape == (ch_out,)
             bias = bias.reshape((1, ch_out, 1, 1))
-            # bcast bias (1, ch_out, 1, 1) -> (n, ch_out, h_out, w_out)
+            # broadcast bias (1, ch_out, 1, 1) -> (n, ch_out, h_out, w_out)
             y += bias
 
         self.saved = (dev, x_out, x.shape, weight, stride, padding)
