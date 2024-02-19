@@ -445,19 +445,69 @@ class Conv2dFn(Fn):
     def forward(self, x, weight, bias, stride=1, padding=0):
         dev = x.device
         assert weight.device == dev
-        xv, weight = x.array, weight.array
+        x, weight = x.array, weight.array
         ch_out, ch_in, ksize_h, ksize_w = weight.shape
-        n, ch_in_x, h_in, w_in = xv.shape
+        n, ch_in_x, h_in, w_in = x.shape
         assert ch_in_x == ch_in
+
+        #    3        6
+        #  /-^-\ /----^----\
+        #  K K K P P P P P P
+        #  K K K . . . . . P
+        #  K K K . . . . . P
+        #  P . . . . . . . P
+        #  P . . . . . . . P
+        #  P . . . . . . . P
+        #  P . . . . . . . P
+        #  P . . . . . . . P
+        #  P P P P P P P P P
+        #  | \-----v-----/ |
+        #  1   +   7   +   1   =   9
+        #
+        # The horizontal case:
+        # - Input width (w_in) of 7 with a padding of 1 added to both
+        #   left and right sides gives a total input width of 9:
+        #
+        #   w_in + 2 * padding = 7 + 2 * 1 = 9
+        #
+        # - The first output pixel is produced by applying kernel of
+        #   size 3 (ksize_w) to the left edge (shown as K in image).
+        #
+        # - The rest of output pixels are produced by repeatedly moving
+        #   kernel to the right and applying. The amount to move - row
+        #   space that's left after applying the very first kernel:
+        #
+        #   w_in + 2 * padding - ksize_w = 9 - 3 = 6
+        #
+        # - 6 1-pixel moves to the right can be done and 6 more kernels
+        #   applied giving 6 more output pixels (7 output pixels total).
+        #
+        # - If moving right 2 pixels (stride=2) at a time instead of 1,
+        #   number of moves (and thus extra kernels applied) is halved:
+        #
+        #   stride=2: (w_in + 2 * padding - ksize_w) // stride = 6 // 2 = 3
+        #   stride=3: 6 // 3 = 2
+        #   stride=4: 6 // 4 = 1
+        #
+        # - To get the final number of output pixels, add the first one
+        #   output pixel (produced by applying the kernel to left edge)
+        #   to the number of output pixels produced by moving the kernel
+        #   (i.e. to the number of moves):
+        #
+        #   (w_in + 2 * padding - ksize_w) // stride + 1 = 6 + 1 = 7
+        #   stride=2: 6 // 2 + 1 = 4
+        #   stride=3: 6 // 3 + 1 = 3
+        #   stride=4: 6 // 4 + 1 = 2
 
         h_out = (h_in + 2 * padding - ksize_h) // stride + 1
         w_out = (w_in + 2 * padding - ksize_w) // stride + 1
+
         # Here we don't allocate y in advance and pass it to
         # ops.conv2d like in other ops.conv2d_* funcs. It's b/c
         # cupy.matmul doesn't yet support `out` param. Also
         # cudnn_conv2d returns original x as x_out for later backward,
         # whereas generic_conv2d returns unfolded im2col'ed x.
-        y, x_out = dev.ops.conv2d(dev, xv, weight, stride, padding, h_out, w_out)
+        y, x_out = dev.ops.conv2d(dev, x, weight, stride, padding, h_out, w_out)
 
         if bias is not None:
             assert bias.device == dev
@@ -467,7 +517,7 @@ class Conv2dFn(Fn):
             # bcast bias (1, ch_out, 1, 1) -> (n, ch_out, h_out, w_out)
             y += bias
 
-        self.saved = (dev, x_out, xv.shape, weight, stride, padding)
+        self.saved = (dev, x_out, x.shape, weight, stride, padding)
         return y
 
     def backward(self, grad):
