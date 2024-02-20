@@ -20,9 +20,6 @@ class Tensor:
             device = svetoch.device.from_data(data) # imply device from data
         else:
             device = svetoch.device.from_device(device)
-            # make sure device and data match (e.g. device="cpu" and
-            # cupy.ndarray data do not match)
-            assert device == svetoch.device.from_data(data)
         self.device = device
         self.backend, self.ops = device.backend, device.ops
         self.array = self.backend.asarray(data, dtype=dtype)
