@@ -1,4 +1,5 @@
 import functools
+from collections import deque
 
 import svetoch.tensor as ten
 from . import functional as F
@@ -10,13 +11,22 @@ class Module:
         self.fwd_hooks, self.bwd_hooks = [], []
         self.extra_repr = ""
 
-    def parameters(self):
+    def parameters(self, recurse=True):
         p = []
-        for m in [self] + self._modules:
+        if hasattr(self, "weight"):
+            p.append(self.weight)
+            if self.bias is not None:
+                p.append(self.bias)
+
+        modules = deque(self._modules)
+        while modules:
+            m = modules.popleft()
             if hasattr(m, "weight"):
                 p.append(m.weight)
                 if m.bias is not None:
                     p.append(m.bias)
+            if recurse:
+                modules.extend(m._modules)
         return p
 
     def requires_grad_(self, requires_grad=True):
