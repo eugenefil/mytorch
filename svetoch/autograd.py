@@ -253,9 +253,9 @@ def generic_relu_bwd(dev, x, y, y_grad):
 
 class ReLUFn(Fn):
     def forward(self, x):
-        dev, xv = x.device, x.array
-        y = dev.ops.relu(dev, xv)
-        self.saved = (dev, xv, y)
+        dev, x = x.device, x.array
+        y = dev.ops.relu(dev, x)
+        self.saved = (dev, x, y)
         return y
 
     def backward(self, grad):
@@ -383,17 +383,20 @@ class SinFn(Fn):
 
 # Here we bundle x @ weight + bias into a single op. This saves a graph
 # node and some calculations. Backward formulas are taken from MatMulFn
-# and AddFn. Also knowing that bias would be broadcasted in a certain
-# way avoids reducing that would otherwise be done in a general way in
-# Tensor.backward(). Using this custom op instead of general code gave
-# 5% reduction in time.
+# and AddFn. Also knowing that bias is broadcasted in a certain way
+# avoids sum-reducing that would otherwise be done in a general way in
+# backward(). Using this custom op gave 5% reduction in time.
 class LinearFn(Fn):
     def forward(self, x, weight, bias):
         x, weight = x.array, weight.array
-        z = x @ weight
-        if bias is not None: z += bias.array
+        # x (n, n_in) @ weight (n_in, n_out) = y (n, n_out)
+        y = x @ weight
+        if bias is not None:
+            # broadcast bias (1, n_out) -> (n, n_out), then
+            # y (n, n_out) += bias (n, n_out)
+            y += bias.array
         self.saved = (x, weight)
-        return z
+        return y
 
     def backward(self, grad):
         x, weight = self.saved
