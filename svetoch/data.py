@@ -20,11 +20,11 @@ class DataLoader:
     def __iter__(self):
         n = len(self.dataset)
         if self.shuffle:
-            idxs = ten.randperm(n)
+            idxs = ten.randperm(n).array
         else:
-            idxs = ten.arange(n)
+            idxs = ten.arange(n).array
         for i in range(0, n, self.batch_size):
-            yield self.dataset[idxs[i : i+self.batch_size].v]
+            yield self.dataset[idxs[i : i+self.batch_size]]
 
     def __len__(self):
         return len(self.dataset)
