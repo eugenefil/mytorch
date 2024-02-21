@@ -261,14 +261,14 @@ class Tensor:
         return self.to(device="cpu")
 
 
-    def new_tensor(self, array, requires_grad=False):
-        return Tensor(array, dtype=self.array.dtype, device=self.device,
+    def new_tensor(self, data, requires_grad=False):
+        return Tensor(data, dtype=self.array.dtype, device=self.device,
                       requires_grad=requires_grad)
 
     def backward(self, *args, **kws):
         if not self.requires_grad:
             raise TypeError("this tensor doesn't require gradients")
-        backward(self, *args, **kws)
+        ag.backward(self, *args, **kws)
 
     def requires_grad_(self, requires_grad=True):
         self.requires_grad = requires_grad

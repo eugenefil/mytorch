@@ -9,3 +9,7 @@ dependencies = ['numpy']
 
 [project.optional-dependencies]
 cuda = ['cupy']
+tests = ['pytest']
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
