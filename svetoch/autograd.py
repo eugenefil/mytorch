@@ -264,13 +264,21 @@ class ReLUFn(Fn):
 
 
 def generic_log_softmax(dev, x):
-    # Plain softmax is unstable due to possible exp()
-    # overflow/underflow. Due to softmax(x) == softmax(x + c) identity
-    # we can replace softmax(x) with softmax(x - max(x)). z = x - max(x)
-    # leaves us negative values of z and one zero value which solves
-    # instabilities for softmax. For log-softmax the problem of
-    # softmax(z) = 0 still remains, so we use expanded form
-    # log(softmax(z)) = z - log(sum(exp(z))), which solves that.
+    # Plain softmax is unstable due to possible exp() result
+    # overflow/underflow. Big positive x leads to inf result - overflow.
+    # Big negative x leads to truncate-to-zero behaviour - underflow.
+    # Due to softmax(x) == softmax(x + c) identity we can replace
+    # softmax(x) with softmax(x - max(x)). z = x - max(x) leaves us with
+    # negative values of z and at least one zero value (the maximum).
+    # Now overflow can't happen, b/c z = 0 is the max value. Underflow
+    # in the denominator also can't happen, b/c exp(0) gives 1.
+    # Underflow in the numerator still can happen, though, and this is a
+    # problem for log-softmax. To solve this we use the expanded form:
+    # log(softmax(z)) = z - log(sum(exp(z))). In this form log's
+    # argument is always at least 1.
+    # See https://www.deeplearningbook.org/contents/numerical.html
+    # Note, switch from x to z does not change differentiation, b/c
+    # x_max is just a constant and dz = dx - d(x_max) = dx - 0 = dx.
     z = x - x.max(axis=1, keepdims=True)
     ez = dev.backend.exp(z)
     ezsum = ez.sum(axis=1, keepdims=True)
@@ -279,6 +287,12 @@ def generic_log_softmax(dev, x):
 
 
 def generic_log_softmax_bwd(dev, y_grad, ez, ezsum):
+    # Note that every forward output y_i value is a function not only of
+    # its corresponding z_i, but of all z values due to the sum term in
+    # softmax denominator. That means every y_i has gradient with respect
+    # to every z value, not just z_i. Eventually those gradients sum up
+    # so that every grad(z_i) includes gradients from all z values - this
+    # is the y_grad.sum() term below.
     return y_grad - ez / ezsum * y_grad.sum(axis=1, keepdims=True)
 
 
