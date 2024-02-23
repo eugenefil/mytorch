@@ -290,7 +290,7 @@ class Tensor:
         return self
 
     def detach(self):
-        return Tensor(self.array)
+        return Tensor(self.array.copy())
 
     def item(self):
         return self.array.item()
