@@ -187,15 +187,15 @@ def cudnn_conv2d(dev, x, weight, stride, padding, h_out, w_out):
     return y, x
 
 
-def cudnn_conv2d_bwd_x(dev, weight, y_grad, stride, padding, x_grad):
+def cudnn_conv2d_backward_x(dev, weight, y_grad, stride, padding, x_grad):
     cudnn.convolution_backward_data(weight, y_grad, None, x_grad,
                                     (padding, padding), (stride, stride),
                                     (1, 1), 1, deterministic=False,
                                      auto_tune=True, tensor_core='auto')
 
 
-def cudnn_conv2d_bwd_w(dev, x, y_grad, stride, padding, w_grad):
-    cudnn.convolution_backward_filter(x, y_grad, w_grad, (padding, padding),
+def cudnn_conv2d_backward_weight(dev, x, y_grad, stride, padding, weight_grad):
+    cudnn.convolution_backward_filter(x, y_grad, weight_grad, (padding, padding),
                                       (stride, stride), (1, 1), 1,
                                       deterministic=False,
                                       auto_tune=True, tensor_core='auto')
@@ -205,7 +205,7 @@ def cudnn_relu(dev, x):
     return cudnn.activation_forward(x, libcudnn.CUDNN_ACTIVATION_RELU)
 
 
-def cudnn_relu_bwd(dev, x, y, y_grad):
+def cudnn_relu_backward(dev, x, y, y_grad):
     return cudnn.activation_backward(x, y, y_grad,
                                      libcudnn.CUDNN_ACTIVATION_RELU)
 
@@ -216,7 +216,7 @@ def cudnn_log_softmax(dev, x):
     return y, (y,)
 
 
-def cudnn_log_softmax_bwd(dev, y_grad, y):
+def cudnn_log_softmax_backward(dev, y_grad, y):
     return cudnn.softmax_backward(y, y_grad, axis=1,
                                   algorithm=libcudnn.CUDNN_SOFTMAX_LOG)
 
@@ -229,12 +229,12 @@ if cupy is not None:
     if cudnn is not None and cudnn_enabled:
         svetoch.device.register_device('cuda', cupy, dict(
             conv2d=cudnn_conv2d,
-            conv2d_bwd_x=cudnn_conv2d_bwd_x,
-            conv2d_bwd_w=cudnn_conv2d_bwd_w,
+            conv2d_backward_x=cudnn_conv2d_backward_x,
+            conv2d_backward_weight=cudnn_conv2d_backward_weight,
             relu=cudnn_relu,
-            relu_bwd=cudnn_relu_bwd,
+            relu_backward=cudnn_relu_backward,
             log_softmax=cudnn_log_softmax,
-            log_softmax_bwd=cudnn_log_softmax_bwd,
+            log_softmax_backward=cudnn_log_softmax_backward,
         ), probe_data=probe_data)
     else:
         svetoch.device.register_ops('cuda', cupy, dict(

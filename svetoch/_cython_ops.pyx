@@ -91,6 +91,14 @@ def col2im(floating[:, :, ::1] grad,
                 for j in range(w_out):
                     j_in = j * stride - padding + j_off
                     if 0 <= i_in and i_in < h_in and 0 <= j_in and j_in < w_in:
+                        # When stride is less than kernel size, kernel
+                        # applications overlap. This means same input
+                        # pixels get used in several kernel applications
+                        # and thus their gradients must be accumulated
+                        # from all those applications on backward pass.
+                        # The output of im2col() is the gradient here.
+                        # For each gradient pixel find the corresponding
+                        # input image pixel and add to its gradient.
                         out[r, c_in, i_in, j_in] += grad[r, k, i * w_out + j]
 
 

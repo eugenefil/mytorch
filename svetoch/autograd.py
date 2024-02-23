@@ -244,7 +244,7 @@ def generic_relu(dev, x):
     return dev.backend.maximum(x, 0.)
 
 
-def generic_relu_bwd(dev, x, y, y_grad):
+def generic_relu_backward(dev, x, y, y_grad):
     x_grad = y_grad.copy()
     # this op is slow and takes all of relu time, better alternatives?
     x_grad[y == 0.] = 0.
@@ -260,7 +260,7 @@ class ReLUFn(Fn):
 
     def backward(self, grad):
         dev, x, y = self.saved
-        return dev.ops.relu_bwd(dev, x, y, grad)
+        return dev.ops.relu_backward(dev, x, y, grad)
 
 
 def generic_log_softmax(dev, x):
@@ -286,7 +286,7 @@ def generic_log_softmax(dev, x):
     return y, (ez, ezsum)
 
 
-def generic_log_softmax_bwd(dev, y_grad, ez, ezsum):
+def generic_log_softmax_backward(dev, y_grad, ez, ezsum):
     # Note that every forward output y_i value is a function not only of
     # its corresponding z_i, but of all z values due to the sum term in
     # softmax denominator. That means every y_i has gradient with respect
@@ -305,7 +305,7 @@ class LogSoftmaxFn(Fn):
 
     def backward(self, grad):
         dev, args = self.saved
-        return dev.ops.log_softmax_bwd(dev, grad, *args)
+        return dev.ops.log_softmax_backward(dev, grad, *args)
 
 
 class MatMulFn(Fn):
@@ -431,33 +431,40 @@ def generic_conv2d(dev, x, weight, stride, padding, h_out, w_out):
     # x (n, ch_in, h_in, w_in) -> xcol (n, c, h_out * w_out)
     dev.ops.im2col(x, ksize_h, ksize_w, stride, padding, h_out, w_out, xcol)
     # reshape, then broadcast weight (ch_out, c) -> (n, ch_out, c), then
-    # weight (n, ch_out, c) @ xcol (n, c, h_out * w_out) = y (n, ch_out, h_out * w_out)
+    # weight (n, ch_out, c) @ xcol (n, c, h_out * w_out) =
+    # y (n, ch_out, h_out * w_out)
     y = weight.reshape((ch_out, c)) @ xcol
     return y.reshape((n, ch_out, h_out, w_out)), xcol
 
 
-def generic_conv2d_bwd_x(dev, weight, y_grad, stride, padding, x_grad):
+def generic_conv2d_backward_x(dev, weight, y_grad, stride, padding,
+        x_grad):
     ch_out, ch_in, ksize_h, ksize_w = weight.shape
     c = ch_in * ksize_h * ksize_w
     n, ch_out, h_out, w_out = y_grad.shape
     weight = weight.reshape((ch_out, c))
-    # broadcast weight.T (c, ch_out) -> (n, c, ch_out),
-    # (n, c, ch_out) @ (n, ch_out, h_out * w_out) = (n, c, h_out * w_out)
+    # broadcast weight.T (c, ch_out) -> (n, c, ch_out), then
+    # weight.T (n, c, ch_out) @ y_grad (n, ch_out, h_out * w_out) =
+    # xcol_grad (n, c, h_out * w_out)
     xcol_grad = weight.T @ y_grad.reshape((n, ch_out, h_out * w_out))
-    # (n, c, h_out * w_out) -> (n, ch_in, h_in, w_in)
+    # accumulate gradients from extracted columns of kernel application
+    # pixels back into input image pixels:
+    # xcol_grad (n, c, h_out * w_out) -> x_grad (n, ch_in, h_in, w_in)
     dev.ops.col2im(xcol_grad, ksize_h, ksize_w, stride, padding,
                    h_out, w_out, x_grad)
 
 
-def generic_conv2d_bwd_w(dev, xcol, y_grad, stride, padding, w_grad):
+def generic_conv2d_backward_weight(dev, xcol, y_grad, stride, padding,
+        weight_grad):
     n, ch_out, h_out, w_out = y_grad.shape
     y_grad = y_grad.reshape((n, ch_out, h_out * w_out))
     # (ch_out, ch_in, ksize_h, ksize_w) -> (ch_out, c)
-    w_grad = w_grad.reshape((ch_out, xcol.shape[1]))
-    # transpose xcol (n, c, h_out * w_out) -> (n, h_out * w_out, c),
-    # (n, ch_out, h_out * w_out) @ (n, h_out * w_out, c) = (n, ch_out, c),
-    # sum (n, ch_out, c) -> (ch_out, c)
-    (y_grad @ xcol.transpose(0, 2, 1)).sum(axis=0, out=w_grad)
+    weight_grad = weight_grad.reshape((ch_out, xcol.shape[1]))
+    # transpose xcol (n, c, h_out * w_out) -> (n, h_out * w_out, c), then
+    # y_grad (n, ch_out, h_out * w_out) @ xcol (n, h_out * w_out, c) =
+    # weight_grad (n, ch_out, c), then sum weight gradients from all
+    # images: sum weight_grad (n, ch_out, c) -> (ch_out, c)
+    (y_grad @ xcol.transpose(0, 2, 1)).sum(axis=0, out=weight_grad)
 
 
 class Conv2dFn(Fn):
@@ -543,16 +550,18 @@ class Conv2dFn(Fn):
         dev, x_out, x_shape, weight, stride, padding = self.saved
         if self.needs_grad[0]:
             x_grad = dev.backend.zeros(x_shape, dtype=x_out.dtype)
-            dev.ops.conv2d_bwd_x(dev, weight, grad, stride, padding, x_grad)
+            dev.ops.conv2d_backward_x(dev, weight, grad, stride, padding,
+                x_grad)
 
         if self.needs_grad[1]:
-            w_grad = dev.backend.empty_like(weight)
-            dev.ops.conv2d_bwd_w(dev, x_out, grad, stride, padding, w_grad)
+            weight_grad = dev.backend.empty_like(weight)
+            dev.ops.conv2d_backward_weight(dev, x_out, grad, stride,
+                padding, weight_grad)
 
         return (
             x_grad if self.needs_grad[0] else None,
-            w_grad if self.needs_grad[1] else None,
-            # (n, ch_out, h_out, w_out) -> (ch_out, )
+            weight_grad if self.needs_grad[1] else None,
+            # (n, ch_out, h_out, w_out) -> (ch_out,)
             grad.sum(axis=(0, 2, 3)) if self.needs_grad[2] else None
         )
 
@@ -624,12 +633,12 @@ class CPUFn(CuPyFn):
 
 svetoch.device.register_device("cpu", numpy, dict(
     conv2d=generic_conv2d,
-    conv2d_bwd_x=generic_conv2d_bwd_x,
-    conv2d_bwd_w=generic_conv2d_bwd_w,
+    conv2d_backward_x=generic_conv2d_backward_x,
+    conv2d_backward_weight=generic_conv2d_backward_weight,
     im2col=_cython_ops.im2col,
     col2im=_cython_ops.col2im,
     relu=generic_relu,
-    relu_bwd=generic_relu_bwd,
+    relu_backward=generic_relu_backward,
     log_softmax=generic_log_softmax,
-    log_softmax_bwd=generic_log_softmax_bwd,
+    log_softmax_backward=generic_log_softmax_backward,
 ))
