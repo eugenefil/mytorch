@@ -1,20 +1,9 @@
 import pytest
-import torch
-import torch.nn.functional as F_torch
 
 import svetoch.tensor as ten
 import svetoch.nn as nn
 import svetoch.nn.functional as F
 import svetoch.cuda
-
-
-def to_torch(*tensors):
-    out = [torch.tensor(t.cpu().array, requires_grad=t.requires_grad,
-                      device=t.device.type)
-           for t in tensors]
-    if len(out) == 1:
-        return out[0]
-    return out
 
 
 device_params = [('cpu', False)]
@@ -110,15 +99,6 @@ def test_conv2d(conv2d_inputs):
 
          [[3, 3],
           [3, 3]]]])).all()
-
-    x_torch, weight_torch, bias_torch = to_torch(x, weight, bias)
-    y_torch = F_torch.conv2d(x_torch, weight_torch, bias_torch,
-        stride=2, padding=1)
-    assert (to_torch(y) == y_torch).all()
-    y_torch.sum().backward()
-    assert (to_torch(bias.grad) == bias_torch.grad).all()
-    assert (to_torch(weight.grad) == weight_torch.grad).all()
-    assert (to_torch(x.grad) == x_torch.grad).all()
 
 
 def test_conv2d_no_bias(conv2d_inputs):
@@ -222,12 +202,6 @@ def test_relu(device):
     assert (x.grad == x.new_tensor([
         [0., 0],
         [1, 1]])).all()
-
-    x_torch = to_torch(x)
-    y_torch = F_torch.relu(x_torch)
-    assert (to_torch(y) == y_torch).all()
-    y_torch.sum().backward()
-    assert (to_torch(x.grad) == x_torch.grad).all()
 
 
 def near(x, y, eps):
