@@ -1,6 +1,6 @@
-This is a tiny deep learning framework loosely modeled after PyTorch. It's made to try my hand at implementing automatic differentiation, CNNs, CUDA kernels, Cython, etc. It can do MNIST (like [here](https://github.com/eugenefil/ml/blob/master/mnist-svetoch.ipynb)).
+This is a tiny deep learning framework loosely modeled after PyTorch. It was made to try my hand at implementing automatic differentiation, CNNs, CUDA kernels, Cython, etc. See [examples/mnist.ipynb](https://github.com/eugenefil/svetoch/blob/master/examples/mnist.ipynb) for an example.
 
-It supports 2 types of tensor devices:
+There is support for 2 types of tensor devices:
 
 - `cpu` - the default. NumPy arrays serve as the tensor backend. Some routines are written in Cython and parallelized with OpenMP for speedup.
 
